@@ -693,3 +693,81 @@ Describe 'Get-ScriptVersion / Test-WidgetOlder' {
         Test-WidgetOlder 'C:\nowhere\scripts\widget.ps1' 'C:\a\2.4.0\scripts\widget.ps1' | Should -BeTrue
     }
 }
+
+
+Describe 'Minecraft theme: prefs, color map and cache state' {
+    It 'Read-Prefs accepts the minecraft theme' {
+        $dir = Join-Path $TestDrive ('mc' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $dir | Out-Null
+        [IO.File]::WriteAllText((Join-Path $dir 'prefs.json'), '{"theme":"minecraft"}')
+        (Read-Prefs $dir).theme | Should -Be 'minecraft'
+    }
+    It 'Resolve-Theme keeps minecraft whatever Windows uses' {
+        Resolve-Theme 'minecraft' $true | Should -Be 'minecraft'
+        Resolve-Theme 'minecraft' $false | Should -Be 'minecraft'
+    }
+    It 'the minecraft color map has unique values, none a key or a native color' {
+        $m = Get-ColorMap 'minecraft'
+        $m.Count | Should -BeGreaterThan 8
+        @($m.Values | Select-Object -Unique).Count | Should -Be $m.Count
+        foreach ($v in $m.Values) {
+            $m.ContainsKey($v) | Should -BeFalse -Because "$v is also a key"
+            @('#FFFFFF', '#2F6F4E') -contains $v | Should -BeFalse -Because "$v is a native color"
+        }
+    }
+    It 'every key of the minecraft map is a color written in widget.ps1' {
+        $text = [IO.File]::ReadAllText((Join-Path (Split-Path -Parent $PSScriptRoot) 'plugins\opaiva-code-widget\scripts\widget.ps1'))
+        $hex = [regex]::Matches($text, '#[0-9A-Fa-f]{6}(?![0-9A-Fa-f])') | ForEach-Object { $_.Value.ToUpper() } | Sort-Object -Unique
+        foreach ($k in (Get-ColorMap 'minecraft').Keys) { $hex -contains $k.ToUpper() | Should -BeTrue -Because "$k is not used by the widget" }
+    }
+    It 'switching light -> minecraft goes back through the dark colors without a clash' {
+        $light = Get-ColorMap 'light'
+        $mc = Get-ColorMap 'minecraft'
+        $back = @{}
+        foreach ($k in $light.Keys) { $back[$light[$k]] = $k }
+        foreach ($k in $light.Keys) {
+            # light value -> dark key -> minecraft value (or itself) is what Set-Theme computes
+            Convert-ThemeColor (Convert-ThemeColor $light[$k] $back) $mc | Should -Be (Convert-ThemeColor $k $mc)
+        }
+    }
+
+    Context 'Get-MinecraftState' {
+        BeforeEach {
+            $dir = Join-Path $TestDrive ('d' + [guid]::NewGuid().ToString('N'))
+            New-Item -ItemType Directory -Path $dir | Out-Null
+            $mc = Get-MinecraftFile $dir '' ''
+            New-Item -ItemType Directory -Path (Join-Path $mc 'textures'), (Join-Path $mc 'sounds') | Out-Null
+        }
+        It 'is none without a status file' {
+            Get-MinecraftState $dir | Should -Be 'none'
+        }
+        It 'is ready when status says ready and all six files exist' {
+            foreach ($f in $script:McFiles) { [IO.File]::WriteAllBytes((Get-MinecraftFile $dir $f[0] $f[1]), [byte[]](1, 2, 3)) }
+            [IO.File]::WriteAllText((Join-Path $mc 'status.json'), '{"state":"ready","message":"","version":"1","pid":1}')
+            Get-MinecraftState $dir | Should -Be 'ready'
+        }
+        It 'is none when status says ready but a file is missing' {
+            foreach ($f in $script:McFiles) { [IO.File]::WriteAllBytes((Get-MinecraftFile $dir $f[0] $f[1]), [byte[]](1)) }
+            Remove-Item -LiteralPath (Get-MinecraftFile $dir 'sounds' 'pop.ogg')
+            [IO.File]::WriteAllText((Join-Path $mc 'status.json'), '{"state":"ready"}')
+            Get-MinecraftState $dir | Should -Be 'none'
+        }
+        It 'is downloading while the downloader process is alive' {
+            [IO.File]::WriteAllText((Join-Path $mc 'status.json'), ('{{"state":"downloading","pid":{0}}}' -f $PID))
+            Get-MinecraftState $dir | Should -Be 'downloading'
+        }
+        It 'is failed when the downloader process is gone' {
+            [IO.File]::WriteAllText((Join-Path $mc 'status.json'), '{"state":"downloading","pid":2147483000}')
+            Get-MinecraftState $dir | Should -Be 'failed'
+        }
+        It 'is failed with the message of a failed download' {
+            [IO.File]::WriteAllText((Join-Path $mc 'status.json'), '{"state":"failed","message":"wrong hash for xp.ogg"}')
+            Get-MinecraftState $dir | Should -Be 'failed'
+            Get-MinecraftMessage $dir | Should -Be 'wrong hash for xp.ogg'
+        }
+        It 'is none for a status file that is not JSON' {
+            [IO.File]::WriteAllText((Join-Path $mc 'status.json'), '{{ no')
+            Get-MinecraftState $dir | Should -Be 'none'
+        }
+    }
+}
