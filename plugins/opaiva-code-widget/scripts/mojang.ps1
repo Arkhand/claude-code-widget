@@ -128,3 +128,125 @@ function Test-MojangUrl([string]$Url, [bool]$AllowAny) {
         return ($u.Scheme -eq 'https' -and ($script:MojangHosts -contains $u.Host))
     } catch { return $false }
 }
+
+
+function Get-MojangUrls {
+    $test = $env:CLAUDE_WIDGET_MOJANG
+    if ($test) { return @{ manifest = "$test/version_manifest_v2.json"; objects = "$test/objects"; test = $true } }
+    return @{ manifest = 'https://piston-meta.mojang.com/mc/game/version_manifest_v2.json'; objects = 'https://resources.download.minecraft.net'; test = $false }
+}
+
+# GET -> bytes. With $From/$To it asks for that byte range and insists on a 206 answer: a server that
+# ignores Range would send the whole 40 MB jar, so the body is never read in that case.
+function Invoke-HttpGet([string]$Url, [long]$From = -1, [long]$To = -1, [int]$MaxBytes = 8388608) {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    $req = [Net.HttpWebRequest]::Create($Url)
+    $req.Timeout = 20000
+    $req.ReadWriteTimeout = 20000
+    $req.UserAgent = 'opaiva-code-widget'
+    if ($From -ge 0) { $req.AddRange($From, $To) }
+    $res = $req.GetResponse()
+    try {
+        $want = if ($From -ge 0) { 206 } else { 200 }
+        if ([int]$res.StatusCode -ne $want) { throw "$Url : HTTP $([int]$res.StatusCode) (wanted $want)" }
+        $ms = New-Object IO.MemoryStream
+        $st = $res.GetResponseStream()
+        $buf = New-Object byte[] 65536
+        while (($n = $st.Read($buf, 0, $buf.Length)) -gt 0) {
+            $ms.Write($buf, 0, $n)
+            if ($ms.Length -gt $MaxBytes) { throw "$Url : more than $MaxBytes bytes" }
+        }
+        return , $ms.ToArray()
+    }
+    finally { $res.Close() }
+}
+
+function Write-McStatus([string]$Mc, [string]$State, [string]$Message = '', [string]$Version = '') {
+    $o = [ordered]@{ state = $State; message = $Message; version = $Version; pid = $PID; at = (Get-Date).ToString('s') }
+    $tmp = Join-Path $Mc 'status.json.tmp'
+    [IO.File]::WriteAllText($tmp, ($o | ConvertTo-Json -Compress), (New-Object Text.UTF8Encoding $false))
+    Move-Item -LiteralPath $tmp -Destination (Join-Path $Mc 'status.json') -Force
+}
+
+function Save-McFile([string]$Path, [byte[]]$Bytes) {
+    [IO.File]::WriteAllBytes("$Path.tmp", $Bytes)
+    Move-Item -LiteralPath "$Path.tmp" -Destination $Path -Force
+}
+
+# file in the cache -> name in the game's asset index
+$script:McSounds = [ordered]@{
+    'xp.ogg'      = 'minecraft/sounds/random/orb.ogg'
+    'pop.ogg'     = 'minecraft/sounds/random/pop.ogg'
+    'levelup.ogg' = 'minecraft/sounds/random/levelup.ogg'
+}
+# file in the cache -> entry in the client jar, tint, crop
+$script:McTextures = [ordered]@{
+    'dirt.png'  = @{ entry = 'assets/minecraft/textures/block/dirt.png'; tint = $null; crop = $null }
+    'grass.png' = @{ entry = 'assets/minecraft/textures/block/grass_block_top.png'; tint = '#79C05A'; crop = $null }
+    'orb.png'   = @{ entry = 'assets/minecraft/textures/entity/experience/experience_orb.png'; tint = '#C8FF20'; crop = @(0, 0, 16, 16) }
+}
+
+# Downloads everything into memory, and only then writes the files and "ready": a failure on the way
+# leaves no half-saved theme. Returns $true when ready.
+function Invoke-MojangDownload([string]$Dir) {
+    $ErrorActionPreference = 'Stop'
+    $mc = Join-Path $Dir 'minecraft'
+    $sounds = Join-Path $mc 'sounds'
+    $textures = Join-Path $mc 'textures'
+    New-Item -ItemType Directory -Force -Path $sounds, $textures | Out-Null
+    $version = ''
+    try {
+        Write-McStatus $mc 'downloading'
+        $u = Get-MojangUrls
+        $getJson = {
+            param($url)
+            if (-not (Test-MojangUrl $url $u.test)) { throw "URL not allowed: $url" }
+            [Text.Encoding]::UTF8.GetString([byte[]](Invoke-HttpGet $url)) | ConvertFrom-Json
+        }
+        $manifest = & $getJson $u.manifest
+        $rel = @($manifest.versions | Where-Object { $_.id -eq $manifest.latest.release }) | Select-Object -First 1
+        if (-not $rel) { throw 'no release in the version manifest' }
+        $version = [string]$rel.id
+        $ver = & $getJson ([string]$rel.url)
+        $index = & $getJson ([string]$ver.assetIndex.url)
+
+        $files = [ordered]@{}   # path -> bytes, saved at the end
+        foreach ($name in $script:McSounds.Keys) {
+            $key = $script:McSounds[$name]
+            $obj = $index.objects.$key
+            if (-not $obj) { throw "sound not in the asset index: $key" }
+            $hash = [string]$obj.hash
+            if ($hash -notmatch '^[0-9a-f]{40}$') { throw "bad hash for $name" }
+            $bytes = [byte[]](Invoke-HttpGet "$($u.objects)/$($hash.Substring(0, 2))/$hash" -1 -1 $script:McLimit)
+            $sha = [BitConverter]::ToString([Security.Cryptography.SHA1]::Create().ComputeHash($bytes)).Replace('-', '').ToLower()
+            if ($sha -ne $hash) { throw "wrong hash for $name" }
+            $files[(Join-Path $sounds $name)] = $bytes
+        }
+
+        $jarUrl = [string]$ver.downloads.client.url
+        if (-not (Test-MojangUrl $jarUrl $u.test)) { throw "URL not allowed: $jarUrl" }
+        $jarLen = [long]$ver.downloads.client.size
+        $read = { param($a, $b) , (Invoke-HttpGet $jarUrl $a $b 8388608) }
+        $zip = Read-ZipIndex $read $jarLen @($script:McTextures.Values | ForEach-Object { $_.entry })
+        foreach ($name in $script:McTextures.Keys) {
+            $t = $script:McTextures[$name]
+            if (-not $zip.ContainsKey($t.entry)) { throw "texture not in the jar: $($t.entry)" }
+            $png = [byte[]](Get-ZipEntryBytes $read $zip[$t.entry] $script:McLimit)
+            if ($png.Length -lt 8 -or $png[0] -ne 0x89 -or $png[1] -ne 0x50 -or $png[2] -ne 0x4E -or $png[3] -ne 0x47) { throw "not a PNG: $($t.entry)" }
+            if ($t.tint) { $png = [byte[]](ConvertTo-TintedPng $png $t.tint $t.crop) }
+            $files[(Join-Path $textures $name)] = $png
+        }
+
+        foreach ($path in $files.Keys) { Save-McFile $path ([byte[]]$files[$path]) }
+        Write-McStatus $mc 'ready' '' $version
+        return $true
+    }
+    catch {
+        try { Write-McStatus $mc 'failed' ([string]$_.Exception.Message) $version } catch {}
+        return $false
+    }
+}
+
+if ($Dir) {
+    if (Invoke-MojangDownload $Dir) { exit 0 } else { exit 1 }
+}

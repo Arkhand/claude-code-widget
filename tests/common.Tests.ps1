@@ -742,12 +742,12 @@ Describe 'Minecraft theme: prefs, color map and cache state' {
             Get-MinecraftState $dir | Should -Be 'none'
         }
         It 'is ready when status says ready and all six files exist' {
-            foreach ($f in $script:McFiles) { [IO.File]::WriteAllBytes((Get-MinecraftFile $dir $f[0] $f[1]), [byte[]](1, 2, 3)) }
+            foreach ($f in (Get-McFileList)) { [IO.File]::WriteAllBytes((Get-MinecraftFile $dir $f[0] $f[1]), [byte[]](1, 2, 3)) }
             [IO.File]::WriteAllText((Join-Path $mc 'status.json'), '{"state":"ready","message":"","version":"1","pid":1}')
             Get-MinecraftState $dir | Should -Be 'ready'
         }
         It 'is none when status says ready but a file is missing' {
-            foreach ($f in $script:McFiles) { [IO.File]::WriteAllBytes((Get-MinecraftFile $dir $f[0] $f[1]), [byte[]](1)) }
+            foreach ($f in (Get-McFileList)) { [IO.File]::WriteAllBytes((Get-MinecraftFile $dir $f[0] $f[1]), [byte[]](1)) }
             Remove-Item -LiteralPath (Get-MinecraftFile $dir 'sounds' 'pop.ogg')
             [IO.File]::WriteAllText((Join-Path $mc 'status.json'), '{"state":"ready"}')
             Get-MinecraftState $dir | Should -Be 'none'

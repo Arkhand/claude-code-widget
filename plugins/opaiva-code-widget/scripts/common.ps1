@@ -487,10 +487,12 @@ function Get-MinecraftFile([string]$Dir, [string]$Kind, [string]$Name) {
 }
 
 # The six files the theme needs: kind, name
-$script:McFiles = @(
-    , @('textures', 'dirt.png'), @('textures', 'grass.png'), @('textures', 'orb.png'),
-    @('sounds', 'xp.ogg'), @('sounds', 'pop.ogg'), @('sounds', 'levelup.ogg')
-)
+function Get-McFileList {
+    return , @(
+        @('textures', 'dirt.png'), @('textures', 'grass.png'), @('textures', 'orb.png'),
+        @('sounds', 'xp.ogg'), @('sounds', 'pop.ogg'), @('sounds', 'levelup.ogg')
+    )
+}
 
 function Read-MinecraftStatus([string]$Dir) {
     try {
@@ -510,7 +512,7 @@ function Get-MinecraftState([string]$Dir) {
         return 'failed'
     }
     if ($s.state -eq 'ready') {
-        foreach ($f in $script:McFiles) {
+        foreach ($f in (Get-McFileList)) {
             if (-not (Test-Path -LiteralPath (Get-MinecraftFile $Dir $f[0] $f[1]))) { return 'none' }
         }
         return 'ready'
