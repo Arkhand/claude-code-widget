@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.5.2 (2026-10-13)
+
+- Small fixes: `prefs.json` is saved whole-file-at-once and a failed save is logged; a sound file Windows cannot play is logged; the README lists the `prefs.json` fields.
+
 ## 2.5.1 (2026-10-13)
 
 - **Bigger XP orb in the Minecraft theme.** The status dot was a tiny speck because the orb picture has a transparent margin; the margin is now cropped and the dot is 14 px.

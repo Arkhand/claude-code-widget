@@ -387,7 +387,11 @@ function Read-Prefs([string]$Dir) {
 function Save-Prefs([string]$Dir, $Prefs) {
     try {
         $o = [ordered]@{ theme = [string]$Prefs.theme; opacity = [double]$Prefs.opacity; volume = [int]$Prefs.volume; scale = [double]$Prefs.scale; minimal = [bool]$Prefs.minimal }
-        [IO.File]::WriteAllText((Join-Path $Dir 'prefs.json'), ($o | ConvertTo-Json -Compress), (Get-Utf8NoBom))
+        $path = Join-Path $Dir 'prefs.json'
+        # Whole file at once: a crash in the middle never leaves half a prefs.json
+        [IO.File]::WriteAllText("$path.tmp", ($o | ConvertTo-Json -Compress), (Get-Utf8NoBom))
+        if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
+        [IO.File]::Move("$path.tmp", $path)
         return $true
     } catch { return $false }
 }

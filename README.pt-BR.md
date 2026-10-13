@@ -130,6 +130,8 @@ Defina estas variáveis de ambiente no bloco `env` do `~/.claude/settings.json`:
 
 Clique com o botão direito no widget para mudar como ele parece e soa. Cada escolha vale na hora e fica salva em `prefs.json`, na pasta de dados do plugin.
 
+Você também pode editá-lo à mão (reinicie o widget depois): `{"theme":"dark","opacity":1,"volume":100,"scale":1,"minimal":false}`. `theme` é `dark`, `light`, `auto` ou `minecraft`; `opacity` vai de 0,5 a 1; `volume` de 0 a 100; `scale` é 1, 1,25 ou 1,5; `minimal` é true ou false. Um valor ausente ou inválido volta ao padrão.
+
 | Menu | Opções |
 | --- | --- |
 | Tema | Escuro (padrão), Claro ou Automático (segue o tema de aplicativos do Windows quando o widget abre) ou Minecraft (veja abaixo) |
