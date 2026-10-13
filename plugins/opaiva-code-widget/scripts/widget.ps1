@@ -34,8 +34,9 @@ $DoneMaxAgeMs = 12 * 3600 * 1000
 $Lang = Resolve-Lang $Lang
 $S = Get-Strings $Lang
 
-# Preferences (prefs.json): theme, opacity, volume, scale, minimal pill. -Theme only applies to -RenderSamples.
-$script:prefs = Read-Prefs $Data
+# Preferences (prefs.json): theme, opacity, volume, scale, minimal pill. The README screenshots
+# (-RenderSamples) always start from the defaults, plus -Theme.
+$script:prefs = if ($RenderMode) { Get-DefaultPrefs } else { Read-Prefs $Data }
 if ($RenderMode -and $Theme) { $script:prefs.theme = $Theme }
 
 # One widget per data dir; hook.ps1 computes the same name to know whether the widget is running
@@ -154,11 +155,21 @@ namespace ClaudeWidget {
             return $p
         } catch { Write-Log $_; return $null }
     }
-    if (-not $RenderMode) {
-        $script:sounds.request = New-MediaSound (Get-SchemeSound 'SystemAsterisk')
-        $script:sounds.done = New-MediaSound (Join-Path $env:WINDIR 'Media\Windows Notify System Generic.wav')
-        $script:sounds.allDone = New-MediaSound (Join-Path $env:WINDIR 'Media\tada.wav')
+    # The sounds in use: the Windows ones, or the Minecraft ones once the theme is downloaded
+    function Set-SoundSet([string]$theme) {
+        if ($RenderMode) { return }
+        if ($theme -eq 'minecraft' -and (Get-MinecraftState $Data) -eq 'ready') {
+            $script:sounds.request = New-MediaSound (Get-MinecraftFile $Data 'sounds' 'xp.ogg')
+            $script:sounds.done = New-MediaSound (Get-MinecraftFile $Data 'sounds' 'pop.ogg')
+            $script:sounds.allDone = New-MediaSound (Get-MinecraftFile $Data 'sounds' 'levelup.ogg')
+        }
+        else {
+            $script:sounds.request = New-MediaSound (Get-SchemeSound 'SystemAsterisk')
+            $script:sounds.done = New-MediaSound (Join-Path $env:WINDIR 'Media\Windows Notify System Generic.wav')
+            $script:sounds.allDone = New-MediaSound (Join-Path $env:WINDIR 'Media\tada.wav')
+        }
     }
+    Set-SoundSet 'dark'
     function Play-Sound([string]$name, [scriptblock]$fallback) {
         $vol = [int]$script:prefs.volume
         if ($vol -le 0) { return }
@@ -239,10 +250,13 @@ namespace ClaudeWidget {
   <Border x:Name="Card" Margin="14" CornerRadius="14" Background="#1E1E22" BorderBrush="#34343B" BorderThickness="1">
     <Border.Effect><DropShadowEffect BlurRadius="20" ShadowDepth="3" Opacity="0.5" Color="Black"/></Border.Effect>
     <Grid>
+      <Border x:Name="GrassTop" Height="8" VerticalAlignment="Top" Margin="-6,-6,-6,0"
+              IsHitTestVisible="False" Visibility="Collapsed"/>
+
 
       <StackPanel x:Name="IdlePanel" Orientation="Vertical" Margin="14,9,16,9" Background="Transparent">
         <StackPanel Orientation="Horizontal">
-          <Ellipse Width="8" Height="8" Fill="#5FB98A" VerticalAlignment="Center" Margin="0,0,9,0"/>
+          <Ellipse x:Name="IdleDot" Width="8" Height="8" Fill="#5FB98A" VerticalAlignment="Center" Margin="0,0,9,0"/>
           <TextBlock x:Name="IdleTitle" Text="Claude Code" Foreground="#E8E8EC" FontSize="12.5" FontWeight="SemiBold" VerticalAlignment="Center"/>
           <TextBlock x:Name="IdleText" Foreground="#7E7E88" FontSize="12" VerticalAlignment="Center"/>
         </StackPanel>
@@ -364,7 +378,7 @@ namespace ClaudeWidget {
 
     $win = [Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader $xaml))
     $ui = @{}
-    foreach ($n in 'Card', 'IdlePanel', 'IdleTitle', 'IdleText', 'SessionsList', 'ChangeBox', 'ChangeLines', 'AlwaysList', 'ReqPanel', 'ReqTitle', 'QPanel', 'QTitle', 'DonePanel', 'DoneTitle',
+    foreach ($n in 'Card', 'IdlePanel', 'IdleDot', 'GrassTop', 'IdleTitle', 'IdleText', 'SessionsList', 'ChangeBox', 'ChangeLines', 'AlwaysList', 'ReqPanel', 'ReqTitle', 'QPanel', 'QTitle', 'DonePanel', 'DoneTitle',
         'ReqDot', 'Countdown', 'Tool', 'ProjectChip', 'Project', 'QueueChip', 'QueueText', 'Desc', 'Detail', 'Cwd',
         'BtnApprove', 'BtnDeny', 'BtnVs', 'QCountdown', 'QDot', 'QProjectChip', 'QProject', 'QQueueChip', 'QQueueText',
         'QList', 'BtnAnswer', 'BtnQVs', 'DoneAgo', 'DoneProjectChip', 'DoneProject', 'DoneMoreChip', 'DoneMoreText',
@@ -500,6 +514,62 @@ namespace ClaudeWidget {
         foreach ($k in $script:colorMap.Keys) { $back[$script:colorMap[$k]] = $k }
         Convert-ElementColors $win $back $new
         $script:colorMap = $new
+    }
+
+    # Textures of the Minecraft theme (frame of dirt, strip of grass, XP orbs), only once downloaded.
+    # Any other theme (or no download yet) gets the usual frame and dots back.
+    $script:mcExtras = $false
+    function Get-McImage([string]$file) {
+        $bi = New-Object System.Windows.Media.Imaging.BitmapImage
+        $bi.BeginInit()
+        $bi.CacheOption = [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad
+        $bi.UriSource = [Uri](Get-MinecraftFile $Data 'textures' $file)
+        $bi.EndInit()
+        $bi.Freeze()
+        return $bi
+    }
+    function New-McBrush($image, [bool]$tile) {
+        $b = New-Object System.Windows.Media.ImageBrush $image
+        if ($tile) {
+            $b.TileMode = [System.Windows.Media.TileMode]::Tile
+            $b.ViewportUnits = [System.Windows.Media.BrushMappingMode]::Absolute
+            $b.Viewport = New-Object System.Windows.Rect 0, 0, 32, 32
+        }
+        [System.Windows.Media.RenderOptions]::SetBitmapScalingMode($b, [System.Windows.Media.BitmapScalingMode]::NearestNeighbor)
+        $b.Freeze()
+        return $b
+    }
+    function Set-ThemeExtras([string]$name) {
+        if ($name -eq 'minecraft' -and (Get-MinecraftState $Data) -eq 'ready') {
+            try {
+                $orb = New-McBrush (Get-McImage 'orb.png') $false
+                $dirt = New-McBrush (Get-McImage 'dirt.png') $true
+                $grass = New-McBrush (Get-McImage 'grass.png') $true
+                $ui.Card.BorderBrush = $dirt
+                $ui.Card.BorderThickness = New-Object System.Windows.Thickness 6
+                $ui.Card.CornerRadius = New-Object System.Windows.CornerRadius 0
+                $ui.GrassTop.Background = $grass
+                $ui.GrassTop.Visibility = 'Visible'
+                foreach ($d in 'IdleDot', 'ReqDot', 'QDot') { $ui[$d].Fill = $orb }
+                $script:mcExtras = $true
+                return
+            } catch { Write-Log $_ }
+        }
+        # Back to the plain look (also the palette-only Minecraft look: square corners)
+        $ui.Card.BorderBrush = Get-Brush '#34343B'
+        $ui.Card.BorderThickness = New-Object System.Windows.Thickness 1
+        $ui.Card.CornerRadius = New-Object System.Windows.CornerRadius $(if ($name -eq 'minecraft') { 0 } else { 14 })
+        $ui.GrassTop.Visibility = 'Collapsed'
+        $ui.IdleDot.Fill = Get-Brush '#5FB98A'
+        $ui.ReqDot.Fill = Get-Brush '#D97757'
+        $ui.QDot.Fill = Get-Brush '#7AA2F7'
+        $script:mcExtras = $false
+    }
+    # Every way of changing the theme goes through here: colors, then textures, then sounds
+    function Set-LookTheme([string]$name) {
+        Set-Theme $name
+        Set-ThemeExtras $name
+        Set-SoundSet $name
     }
 
     # --- Focus: only while typing a free-text answer ---
@@ -1119,10 +1189,49 @@ namespace ClaudeWidget {
     function Sync-MenuChecks {
         foreach ($e in $script:prefItems) { $e.item.IsChecked = ($script:prefs[$e.key] -eq $e.value) }
     }
+    # The Minecraft theme is downloaded once, by mojang.ps1 in the background, after the first click
+    $script:mcWaiting = $false
+    $script:mcStarted = 0
+    function Start-MinecraftDownload {
+        try {
+            $script = Join-Path $PSScriptRoot 'mojang.ps1'
+            [void](Start-Process powershell.exe -WindowStyle Hidden -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"{0}"' -f $script), '-Dir', ('"{0}"' -f $Data))
+            $script:mcWaiting = $true
+            $script:mcStarted = Get-NowMs
+        } catch { Write-Log $_ }
+    }
+    # The menu item says what clicking it does: download, wait, or just use the theme
+    function Sync-MinecraftItem([string]$state) {
+        $e = @($script:prefItems | Where-Object { $_.key -eq 'theme' -and $_.value -eq 'minecraft' })[0]
+        if (-not $e) { return }
+        $e.item.Header = switch ($state) {
+            'ready' { $S.themeMinecraft }
+            'downloading' { $S.themeMinecraftBusy }
+            default { $(if ($script:mcWaiting) { $S.themeMinecraftBusy } else { $S.themeMinecraftDownload }) }
+        }
+    }
+    # Called every ~2 s: follows a download that this widget started
+    function Sync-Minecraft {
+        $state = Get-MinecraftState $Data
+        Sync-MinecraftItem $state
+        if (-not $script:mcWaiting) { return }
+        if ($state -eq 'ready') { $script:mcWaiting = $false; Set-Pref 'theme' 'minecraft'; Sync-MinecraftItem 'ready' }
+        elseif ($state -eq 'failed' -or ($state -eq 'none' -and ((Get-NowMs) - $script:mcStarted) -gt 30000)) {
+            $script:mcWaiting = $false
+            Write-Log ('minecraft theme: download failed: ' + (Get-MinecraftMessage $Data))
+            Sync-MinecraftItem $state
+        }
+    }
     function Set-Pref([string]$key, $value) {
+        # Minecraft needs its files first: the click starts the download and changes nothing yet
+        if ($key -eq 'theme' -and $value -eq 'minecraft' -and (Get-MinecraftState $Data) -ne 'ready') {
+            if (-not $script:mcWaiting -and (Get-MinecraftState $Data) -ne 'downloading') { Start-MinecraftDownload }
+            Sync-MinecraftItem (Get-MinecraftState $Data)
+            return
+        }
         $script:prefs[$key] = $value
         switch ($key) {
-            'theme' { Set-Theme (Resolve-Theme $script:prefs.theme (Get-WindowsLightTheme)) }
+            'theme' { Set-LookTheme (Resolve-Theme $script:prefs.theme (Get-WindowsLightTheme)) }
             'opacity' { Set-Opacity }
             'scale' { Set-Scale }
             'minimal' { Set-Minimal }
@@ -1147,7 +1256,8 @@ namespace ClaudeWidget {
     Add-ChoiceMenu $menu $S.menuTheme @(
         @{ label = $S.themeDark; key = 'theme'; value = 'dark' }
         @{ label = $S.themeLight; key = 'theme'; value = 'light' }
-        @{ label = $S.themeAuto; key = 'theme'; value = 'auto' })
+        @{ label = $S.themeAuto; key = 'theme'; value = 'auto' }
+        @{ label = $S.themeMinecraftDownload; key = 'theme'; value = 'minecraft' })
     Add-ChoiceMenu $menu $S.menuOpacity @(foreach ($o in 1.0, 0.9, 0.8, 0.7, 0.6) { @{ label = ('{0}%' -f [int]($o * 100)); key = 'opacity'; value = [double]$o } })
     Add-ChoiceMenu $menu $S.menuVolume @(foreach ($v in 0, 25, 50, 75, 100) { @{ label = $(if ($v -eq 0) { $S.volumeMute } else { '{0}%' -f $v }); key = 'volume'; value = [int]$v } })
     Add-ChoiceMenu $menu $S.menuScale @(foreach ($z in 1.0, 1.25, 1.5) { @{ label = ('{0}%' -f [int]($z * 100)); key = 'scale'; value = [double]$z } })
@@ -1163,13 +1273,14 @@ namespace ClaudeWidget {
     [void]$menu.Items.Add($closeItem)
     $ui.Card.ContextMenu = $menu
     Sync-MenuChecks
+    Sync-MinecraftItem (Get-MinecraftState $Data)
     # The README screenshots are always drawn at normal opacity and size
     if (-not $RenderMode) {
         Set-Opacity
         Set-Scale
     }
     Update-IdleLook
-    try { Set-Theme (Resolve-Theme $script:prefs.theme (Get-WindowsLightTheme)) } catch { Write-Log $_ }
+    try { Set-LookTheme (Resolve-Theme $script:prefs.theme (Get-WindowsLightTheme)) } catch { Write-Log $_ }
 
     # --- Tray icon and "do not disturb" ---
     # The mode is the file dnd.flag: hook.ps1 sends requests to VS Code while it exists, and here the
@@ -1391,6 +1502,7 @@ namespace ClaudeWidget {
                     Write-Log ('screens changed: anchor {0},{1} ({2})' -f [int]$a.right, [int]$a.bottom, $(if ($a.saved) { 'saved' } else { 'default' }))
                 }
             } catch { Write-Log $_ }
+            try { Sync-Minecraft } catch { Write-Log $_ }
         }
     })
     $win.Add_Closed({

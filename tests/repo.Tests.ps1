@@ -130,6 +130,17 @@ Describe 'repository rules' {
         $direct = [regex]::Matches($text, '(?m)^(?!.*Play-Sound).*(SystemSounds|SoundPlayer).*$')
         $direct.Count | Should -Be 0
     }
+    It 'tracks no Mojang assets: no .ogg or .wav, no image named after a game texture' {
+        $files = @(& git -C $repo ls-files)
+        $files | Where-Object { $_ -match '\.(ogg|wav)$' } | Should -BeNullOrEmpty
+        $files | Where-Object { $_ -match '\.png$' -and $_ -match '(?i)minecraft|dirt|grass|orb|creeper' } | Should -BeNullOrEmpty
+    }
+    It '<name> says the Minecraft theme downloads from Mojang, and that it is the only network use' -ForEach $readmes {
+        $text = [IO.File]::ReadAllText($path, [Text.Encoding]::UTF8)
+        $text | Should -Match 'piston-meta\.mojang\.com'
+        $text | Should -Match 'resources\.download\.minecraft\.net'
+        $text | Should -Not -Match '(?i)no network calls and no telemetry\.'
+    }
     It 'widget.ps1 has no handler parameter named like the strings table ($S)' {
         $text = [IO.File]::ReadAllText((Join-Path $repo 'plugins\opaiva-code-widget\scripts\widget.ps1'))
         [regex]::Matches($text, '(?i)param\(([^)]*)\)') | ForEach-Object {

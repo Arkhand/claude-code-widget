@@ -132,7 +132,7 @@ Clique com o botão direito no widget para mudar como ele parece e soa. Cada esc
 
 | Menu | Opções |
 | --- | --- |
-| Tema | Escuro (padrão), Claro ou Automático (segue o tema de aplicativos do Windows quando o widget abre) |
+| Tema | Escuro (padrão), Claro ou Automático (segue o tema de aplicativos do Windows quando o widget abre) ou Minecraft (veja abaixo) |
 | Opacidade | 100, 90, 80, 70 ou 60% |
 | Volume | Mudo, 25, 50, 75 ou 100% (padrão) |
 | Tamanho | 100% (padrão), 125% ou 150% |
@@ -141,6 +141,12 @@ Clique com o botão direito no widget para mudar como ele parece e soa. Cada esc
 <img src="docs/images/pt/light-permission.png" width="420" alt="Cartão de pedido de permissão no tema claro">
 
 O volume vale para os três sons do widget (pedido, terminou, tudo pronto). Se o Windows não conseguir tocar um arquivo de som, o widget usa o som do sistema, que ignora o volume (o Mudo continua silenciando).
+
+### Tema Minecraft (baixa da Mojang)
+
+O item **Minecraft** do menu Tema é a única parte do widget que usa a internet, e só uma vez, quando você clica nele. O widget baixa cerca de 4 MB de texturas e sons dos servidores da Mojang (os mesmos que o launcher do jogo usa: `piston-meta.mojang.com`, `piston-data.mojang.com` e `resources.download.minecraft.net`) para a pasta de dados do plugin (`minecraft\`). O tema liga quando o download termina; se falhar, você continua no tema atual e o motivo vai para o `widget.log`. Com o tema ligado, os cartões ganham cantos retos, moldura de terra com uma faixa de grama no topo e orbes de XP nos pontos de status, e os sons mudam (pedido: orbe de XP, terminou: pop de item, tudo pronto: level up). Se o Windows não tocar arquivos `.ogg` (algumas edições Windows N), ficam os sons do sistema.
+
+Nenhum arquivo da Mojang faz parte deste repositório, e por isso não há imagem deste tema. Minecraft é marca da Mojang Studios e da Microsoft; este projeto não tem vínculo com elas. Para remover os arquivos, apague a pasta `minecraft` na pasta de dados do plugin.
 
 ## Como funciona
 
@@ -158,7 +164,7 @@ Claude Code ──hook──▶ hook.ps1 ──queue\req-<id>.json──▶ widg
 
 - Aprovar no widget é o mesmo que clicar em **Allow** no VS Code. O widget mostra o comando ou o caminho do arquivo inteiro antes de você decidir.
 - **Sempre permitir** grava uma regra permanente: o botão mostra a regra e onde ela vai, e o widget só grava regras que o próprio Claude Code sugeriu para aquele pedido (nunca regras que apagam as suas, nem "bypass permissions").
-- Tudo fica na sua máquina. O widget não acessa a rede e não coleta nenhum dado. Os únicos dados são os arquivos na pasta de dados do plugin, dentro do seu perfil de usuário.
+- Tudo fica na sua máquina. Não há telemetria, e o único uso da rede é o download único do tema Minecraft, opcional, dos servidores da Mojang (veja acima). Os únicos dados são os arquivos na pasta de dados do plugin, dentro do seu perfil de usuário.
 - Pedidos e respostas são arquivos comuns que só o seu usuário do Windows pode gravar. Um programa rodando como você conseguiria gravar uma resposta, mas um programa assim já conseguiria fazer qualquer coisa que você faz.
 - Aprovação de plano e tudo o que você não responder sempre voltam para a confirmação normal do Claude Code.
 

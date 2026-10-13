@@ -368,7 +368,7 @@ function Read-Prefs([string]$Dir) {
             -not [double]::IsNaN($n) -and -not [double]::IsInfinity($n)) { return $n }
         return $null
     }
-    if ($j.theme -is [string] -and @('dark', 'light', 'auto') -contains $j.theme) { $p.theme = $j.theme }
+    if ($j.theme -is [string] -and @('dark', 'light', 'auto', 'minecraft') -contains $j.theme) { $p.theme = $j.theme }
     $n = & $num $j.opacity
     if ($null -ne $n) { $p.opacity = [math]::Min(1.0, [math]::Max(0.5, $n)) }
     $n = & $num $j.volume
@@ -402,6 +402,7 @@ function Get-WindowsLightTheme {
 
 # 'dark' or 'light' from the saved choice ('auto' follows Windows)
 function Resolve-Theme([string]$Theme, [bool]$WindowsIsLight = $false) {
+    if ($Theme -eq 'minecraft') { return 'minecraft' }
     if ($Theme -eq 'light') { return 'light' }
     if ($Theme -eq 'auto' -and $WindowsIsLight) { return 'light' }
     return 'dark'
@@ -412,6 +413,14 @@ function Resolve-Theme([string]$Theme, [bool]$WindowsIsLight = $false) {
 # the green of the finished notice) are the same in every theme. Values must be unique and never also
 # a key, so that going back (theme color -> dark color) is unambiguous: Get-ColorMap's tests enforce it.
 function Get-ColorMap([string]$Theme) {
+    if ($Theme -eq 'minecraft') {
+        # Stone and dirt browns, grass green. Only some colors change; the rest keep the dark theme's.
+        return @{
+            '#1E1E22' = '#2B2723'; '#34343B' = '#5B4332'; '#26262C' = '#3A342E'; '#141417' = '#1B1815'
+            '#2C2C33' = '#4A3F35'; '#24242A' = '#34302B'; '#2A2A30' = '#4A4A4A'; '#3A3A42' = '#6B6B6B'
+            '#5FB98A' = '#7FE03A'; '#D97757' = '#5D9A32'; '#3A2A24' = '#2F4A22'; '#F0A58A' = '#A8E070'
+        }
+    }
     if ($Theme -ne 'light') { return @{} }
     return @{
         '#1E1E22' = '#FAFAFB'; '#34343B' = '#D9D9DF'; '#4A4A54' = '#B8B8C2'; '#5FB98A' = '#2F9A66'
@@ -464,4 +473,56 @@ function Test-WidgetOlder([string]$RunningScript, [string]$OwnScript) {
     $own = Get-ScriptVersion $OwnScript
     if ($running -and $own) { return ($running -lt $own) }
     return $true
+}
+
+
+# ---------------- Minecraft theme cache (filled by mojang.ps1) ----------------
+
+# <Dir>\minecraft\<Kind>\<Name>; with Kind and Name empty, the minecraft folder itself
+function Get-MinecraftFile([string]$Dir, [string]$Kind, [string]$Name) {
+    $p = Join-Path $Dir 'minecraft'
+    if ($Kind) { $p = Join-Path $p $Kind }
+    if ($Name) { $p = Join-Path $p $Name }
+    return $p
+}
+
+# The six files the theme needs: kind, name
+function Get-McFileList {
+    return , @(
+        @('textures', 'dirt.png'), @('textures', 'grass.png'), @('textures', 'orb.png'),
+        @('sounds', 'xp.ogg'), @('sounds', 'pop.ogg'), @('sounds', 'levelup.ogg')
+    )
+}
+
+function Read-MinecraftStatus([string]$Dir) {
+    try {
+        $path = Join-Path (Get-MinecraftFile $Dir '' '') 'status.json'
+        if (-not (Test-Path -LiteralPath $path)) { return $null }
+        return [IO.File]::ReadAllText($path, (Get-Utf8NoBom)) | ConvertFrom-Json
+    } catch { return $null }
+}
+
+# 'none' (never downloaded, or files missing), 'downloading', 'ready' or 'failed'
+function Get-MinecraftState([string]$Dir) {
+    $s = Read-MinecraftStatus $Dir
+    if (-not $s) { return 'none' }
+    if ($s.state -eq 'downloading') {
+        # A downloader that died leaves "downloading" behind: that is a failure, not a wait
+        try { if ($s.pid -and (Get-Process -Id ([int]$s.pid) -ErrorAction Stop)) { return 'downloading' } } catch {}
+        return 'failed'
+    }
+    if ($s.state -eq 'ready') {
+        foreach ($f in (Get-McFileList)) {
+            if (-not (Test-Path -LiteralPath (Get-MinecraftFile $Dir $f[0] $f[1]))) { return 'none' }
+        }
+        return 'ready'
+    }
+    if ($s.state -eq 'failed') { return 'failed' }
+    return 'none'
+}
+
+function Get-MinecraftMessage([string]$Dir) {
+    $s = Read-MinecraftStatus $Dir
+    if ($s -and $s.message) { return [string]$s.message }
+    return ''
 }

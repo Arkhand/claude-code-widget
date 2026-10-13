@@ -132,7 +132,7 @@ Right-click the widget to change how it looks and sounds. Each choice applies ri
 
 | Menu | Choices |
 | --- | --- |
-| Theme | Dark (default), Light, or Automatic (follows the Windows app theme when the widget opens) |
+| Theme | Dark (default), Light, or Automatic (follows the Windows app theme when the widget opens), or Minecraft (see below) |
 | Opacity | 100, 90, 80, 70 or 60% |
 | Volume | Mute, 25, 50, 75 or 100% (default) |
 | Size | 100% (default), 125% or 150% |
@@ -141,6 +141,12 @@ Right-click the widget to change how it looks and sounds. Each choice applies ri
 <img src="docs/images/en/light-permission.png" width="420" alt="Permission request card in the light theme">
 
 The volume applies to the widget's three sounds (request, finished, all done). If Windows cannot play a sound file, the widget falls back to the system sound, which ignores the volume setting (Mute still silences it).
+
+### Minecraft theme (downloads from Mojang)
+
+The **Minecraft** item in the Theme menu is the only part of the widget that uses the internet, and only once, when you click it. The widget downloads about 4 MB of textures and sounds from Mojang's servers (the same ones the game launcher uses: `piston-meta.mojang.com`, `piston-data.mojang.com` and `resources.download.minecraft.net`) into the plugin data folder (`minecraft\`). The theme switches on when the download ends; if it fails, you keep your current theme and the reason goes to `widget.log`. With the theme on, the cards get square corners, a dirt frame with a strip of grass on top and XP orbs for the status dots, and the sounds change (request: XP orb, finished: item pop, all done: level up). If Windows cannot play `.ogg` files (some Windows N editions), the system sounds stay.
+
+No file from Mojang is part of this repository, and there is no screenshot of this theme for the same reason. Minecraft is a trademark of Mojang Studios and Microsoft; this project is not affiliated with them. To remove the files, delete the `minecraft` folder in the plugin data folder.
 
 ## How it works
 
@@ -158,7 +164,7 @@ Claude Code ──hook──▶ hook.ps1 ──queue\req-<id>.json──▶ widg
 
 - Approving in the widget is the same as clicking **Allow** in VS Code. The widget shows the full command or file path before you decide.
 - **Always allow** saves a permanent rule: the button shows the rule and where it goes, and the widget only saves rules Claude Code itself suggested for that request (never rules that remove yours, nor "bypass permissions").
-- Everything stays on your machine. There are no network calls and no telemetry. The only data are files in the plugin data folder, inside your user profile.
+- Everything stays on your machine. There is no telemetry, and the only network use is the optional Minecraft theme's one-time download from Mojang's servers (see above). The only data are files in the plugin data folder, inside your user profile.
 - Requests and answers are plain files that only your Windows user can write. A program running as you could write an answer file, but such a program could already do anything you can.
 - Plan approvals and anything you don't answer always fall back to Claude Code's own prompt.
 
