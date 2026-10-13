@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.5.4 (2026-10-13)
+
+- Internal: `widget.ps1` is 400 lines shorter. The window layout moved to `widget.xaml` and the Win32 helper code to `widget-native.cs`, both loaded by `widget.ps1` at start. No change in behavior.
+
 ## 2.5.3 (2026-10-13)
 
 - The diff no longer shows an extra empty line when the text ends with a newline, and says when the hook left out edits (it keeps 5).

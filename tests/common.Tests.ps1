@@ -1,5 +1,10 @@
 # Unit tests for plugins/opaiva-code-widget/scripts/common.ps1
 BeforeAll {
+    # widget.ps1 plus the layout file it loads
+    function Get-WidgetSource {
+        $d = Join-Path (Split-Path -Parent $PSScriptRoot) 'plugins\opaiva-code-widget\scripts'
+        return [IO.File]::ReadAllText((Join-Path $d 'widget.ps1')) + [IO.File]::ReadAllText((Join-Path $d 'widget.xaml'))
+    }
     . (Join-Path (Split-Path -Parent $PSScriptRoot) 'plugins\opaiva-code-widget\scripts\common.ps1')
 }
 
@@ -594,7 +599,7 @@ Describe 'Resolve-Theme' {
 
 Describe 'Get-ColorMap' {
     BeforeAll {
-        $widgetText = [IO.File]::ReadAllText((Join-Path (Split-Path -Parent $PSScriptRoot) 'plugins\opaiva-code-widget\scripts\widget.ps1'))
+        $widgetText = (Get-WidgetSource)
         $native = @('#FFFFFF', '#D97757', '#2F6F4E')   # same in both themes
     }
     It 'is empty for the dark theme' {
@@ -716,7 +721,7 @@ Describe 'Minecraft theme: prefs, color map and cache state' {
         }
     }
     It 'every key of the minecraft map is a color written in widget.ps1' {
-        $text = [IO.File]::ReadAllText((Join-Path (Split-Path -Parent $PSScriptRoot) 'plugins\opaiva-code-widget\scripts\widget.ps1'))
+        $text = (Get-WidgetSource)
         $hex = [regex]::Matches($text, '#[0-9A-Fa-f]{6}(?![0-9A-Fa-f])') | ForEach-Object { $_.Value.ToUpper() } | Sort-Object -Unique
         foreach ($k in (Get-ColorMap 'minecraft').Keys) { $hex -contains $k.ToUpper() | Should -BeTrue -Because "$k is not used by the widget" }
     }
