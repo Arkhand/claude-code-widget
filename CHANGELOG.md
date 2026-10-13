@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.5.0 (2026-10-13)
+
+- **Minecraft theme.** Pick it in the Theme menu: square corners, a dirt frame with a strip of grass, XP orbs for the status dots, and Minecraft sounds (request, finished, all done). The first click downloads about 4 MB of textures and sounds from Mojang's servers into the plugin data folder (nothing from Mojang is in this repository); the theme switches on when the download ends. It is the only part of the widget that uses the internet.
+- The README screenshots are now always drawn with the default look, whatever your `prefs.json` says.
+
 ## 2.4.1 (2026-10-08)
 
 - **An old session no longer downgrades the widget.** After a plugin update, a Claude Code session still running the previous version used to replace the new widget with its own old one (at its next "finished" notice). The hook now replaces a running widget only when that widget is older than the hook's own version.
