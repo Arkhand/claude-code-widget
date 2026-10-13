@@ -140,6 +140,8 @@ namespace ClaudeWidget {
         try {
             $key = Get-Item -LiteralPath "HKCU:\AppEvents\Schemes\Apps\.Default\$soundEvent\.Current" -ErrorAction Stop
             $path = [Environment]::ExpandEnvironmentVariables([string]$key.GetValue(''))
+            # An entry that is only a file name lives in the Windows Media folder
+            if ($path -and -not [IO.Path]::IsPathRooted($path)) { $path = Join-Path (Join-Path $env:WINDIR 'Media') $path }
             if ($path -and (Test-Path -LiteralPath $path)) { return $path }
         } catch {}
         return $null
@@ -662,6 +664,7 @@ namespace ClaudeWidget {
             $tb.TextWrapping = 'NoWrap'
             if ($l.kind -eq 'del') { $tb.Text = '- ' + $l.text; $tb.Background = Get-Brush '#3A1E1E'; $tb.Foreground = Get-Brush '#F29090' }
             elseif ($l.kind -eq 'add') { $tb.Text = '+ ' + $l.text; $tb.Background = Get-Brush '#1E3A2A'; $tb.Foreground = Get-Brush '#7FD3A0' }
+            elseif ($l.kind -eq 'edits') { $tb.Text = $S.diffMoreEdits -f $l.text; $tb.Foreground = Get-Brush '#7E7E88' }
             else { $tb.Text = $S.diffMore -f $l.text; $tb.Foreground = Get-Brush '#7E7E88' }
             [void]$ui.ChangeLines.Children.Add($tb)
         }
@@ -992,7 +995,7 @@ namespace ClaudeWidget {
             $dot.Fill = Get-Brush $(if ($r.waiting) { '#D97757' } else { '#5FB98A' })
             [System.Windows.Controls.DockPanel]::SetDock($dot, 'Left')
             $mins = [int][math]::Floor(((Get-NowMs) - [int64]$r.since) / 60000)
-            $age = New-TextBlock $(if ($mins -lt 1) { $S.now } else { $S.minutesAgo -f $mins }) 11.5 '#7E7E88'
+            $age = New-TextBlock $(if ($mins -lt 1) { $S.now } elseif ($mins -lt 60) { $S.minutesAgo -f $mins } else { $S.hoursAgo -f [math]::Floor($mins / 60) }) 11.5 '#7E7E88'
             $age.Margin = '14,0,0,0'
             $age.VerticalAlignment = 'Center'
             [System.Windows.Controls.DockPanel]::SetDock($age, 'Right')
@@ -1186,7 +1189,9 @@ namespace ClaudeWidget {
         $ui.IdleTitle.Visibility = $v
         $ui.IdleText.Visibility = $v
         $status = if ($ui.IdleText.Text.Length -gt $Sep.Length) { $ui.IdleText.Text.Substring($Sep.Length) } else { '' }
-        $ui.IdlePanel.ToolTip = if ($min -and $status) { $status + [Environment]::NewLine + $S.idleTip } else { $S.idleTip }
+        $tip = if ($min -and $status) { $status + [Environment]::NewLine + $S.idleTip } else { $S.idleTip }
+        # Only when it changed: replacing a tooltip that is open would close it
+        if ($ui.IdlePanel.ToolTip -ne $tip) { $ui.IdlePanel.ToolTip = $tip }
     }
     function Set-Minimal { Update-IdleLook }
     # Right-click menu: each submenu lists fixed choices with the current one checked
@@ -1357,7 +1362,7 @@ namespace ClaudeWidget {
         # --- Global hotkeys (opt-in: CLAUDE_WIDGET_HOTKEYS=1) ---
         # Approve / deny act only on a permission card on screen; the third toggles "do not disturb"
         function Send-HotkeyDecision([string]$decision) {
-            if ($script:current -and $script:current.kind -eq 'permission' -and -not $script:dnd) { Send-Response $decision }
+            if ($script:current -and $script:current.kind -eq 'permission' -and -not (Test-Dnd $Data)) { Send-Response $decision }
         }
         $script:hotkeyActions = @{}
         $script:hotkeyIds = @()

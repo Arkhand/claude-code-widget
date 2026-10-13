@@ -771,3 +771,15 @@ Describe 'Minecraft theme: prefs, color map and cache state' {
         }
     }
 }
+
+Describe 'diff details' {
+    It 'a text ending with a newline has no extra empty line' {
+        @(Split-TextLines "a`nb`n").Count | Should -Be 2
+        @(Split-TextLines "a`r`n").Count | Should -Be 1
+    }
+    It 'says how many edits the hook left out' {
+        $lines = @(Get-DiffLines @{ kind = 'edit'; edits = @(@{ old = 'x'; new = 'y' }); droppedEdits = 3 })
+        $lines[-1].kind | Should -Be 'edits'
+        $lines[-1].text | Should -Be '3'
+    }
+}

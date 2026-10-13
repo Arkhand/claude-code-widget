@@ -90,7 +90,7 @@ O widget volta a abrir no canto padrão, porque o nome novo vem com uma pasta de
 
 - **Arraste** o widget para onde quiser. Ele lembra a posição.
 - **Duplo clique** no widget (fora dos botões) traz a janela da sessão: no aviso de "terminou", a daquela sessão; nos outros casos, a da última sessão em que você digitou.
-- **Botão direito** abre o menu: **Tema**, **Opacidade**, **Volume**, **Tamanho**, **Pílula mínima** (veja [Aparência e som](#aparência-e-som)) e **Fechar widget**. Fechar devolve os pedidos pendentes ao VS Code, e o widget abre de novo na próxima sessão ou no próximo pedido.
+- **Botão direito** abre o menu: **Tema**, **Opacidade**, **Volume**, **Tamanho**, **Pílula mínima** (veja [Aparência e som](#aparência-e-som)) e **Fechar widget**. Fechar devolve os pedidos pendentes ao VS Code, e o widget abre de novo na próxima sessão ou no próximo pedido (com o "não perturbe" ligado, ele continua escondido).
 - **Ícone na bandeja.** O clique esquerdo liga e desliga o **não perturbe**; o botão direito abre o menu. No modo, pedidos e perguntas vão direto para o VS Code, o widget fica escondido e os avisos de "terminou" esperam até você desligar. Fica ligado até você desligar, inclusive depois de reiniciar. O Windows pode esconder ícones novos na bandeja: arraste-o para a barra uma vez.
 - Com vários pedidos ou sessões, aparece quantos estão esperando (`+1 na fila`), e eles vêm um de cada vez.
 - O chip do projeto também mostra o título da sessão (o nome dado com `/rename`, ou o automático do Claude Code). Quando várias sessões estavam trabalhando e a última termina, o aviso toca um som diferente.
@@ -117,6 +117,8 @@ Defina estas variáveis de ambiente no bloco `env` do `~/.claude/settings.json`:
 | `CLAUDE_WIDGET_KEY_APPROVE` | `Ctrl+Alt+Y` | Atalho que aprova o cartão de permissão na tela. |
 | `CLAUDE_WIDGET_KEY_DENY` | `Ctrl+Alt+N` | Atalho que nega. |
 | `CLAUDE_WIDGET_KEY_DND` | `Ctrl+Alt+D` | Atalho que liga e desliga o "não perturbe". |
+
+As variáveis de atalho são lidas quando o widget inicia; reinicie-o depois de mudar (ele reinicia sozinho na próxima atualização do plugin). Combinações com AltGr podem não funcionar como atalho. Nos botões "Sempre permitir", **só aqui (local)** quer dizer `.claude/settings.local.json`; um destino que o Claude Code criar no futuro aparece como veio.
 
 ```json
 {

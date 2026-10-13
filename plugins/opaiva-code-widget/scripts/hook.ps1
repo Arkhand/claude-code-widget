@@ -375,9 +375,10 @@ function New-ChangeInfo([string]$Tool, $ToolInput) {
     if ($Tool -eq 'Edit') { $edits = @($ToolInput) }
     elseif ($Tool -eq 'MultiEdit') { $edits = @($ToolInput.edits) }
     else { return $null }
-    $list = @($edits | Where-Object { $_ } | Select-Object -First 5 | ForEach-Object { @{ old = (Limit-Text $_.old_string); new = (Limit-Text $_.new_string) } })
+    $all = @($edits | Where-Object { $_ })
+    $list = @($all | Select-Object -First 5 | ForEach-Object { @{ old = (Limit-Text $_.old_string); new = (Limit-Text $_.new_string) } })
     if ($list.Count -eq 0) { return $null }
-    return @{ kind = 'edit'; edits = $list }
+    return @{ kind = 'edit'; edits = $list; droppedEdits = [math]::Max(0, $all.Count - 5) }
 }
 
 # The suggestions of Claude Code the widget may offer as "Always allow", with their original index:

@@ -282,7 +282,10 @@ function Format-SessionLine([string]$Cwd, [string]$Title) {
 # Lines of text, with Windows or Unix line endings; an empty text has none
 function Split-TextLines([string]$Text) {
     if (-not $Text) { return @() }
-    return @(($Text -replace "`r`n", "`n") -split "`n")
+    $lines = @(($Text -replace "`r`n", "`n") -split "`n")
+    # A text that ends with a newline has no extra empty last line
+    if ($lines.Count -gt 1 -and $lines[-1] -eq '') { $lines = @($lines[0..($lines.Count - 2)]) }
+    return $lines
 }
 
 # What to show on a permission card for a file change: a list of { kind; text } with kind add, del
@@ -309,6 +312,8 @@ function Get-DiffLines($Change) {
     $shown = @($all | Select-Object -First 14)
     $shown
     if ($all.Count -gt 14) { [pscustomobject]@{ kind = 'more'; text = [string]($all.Count - 14) } }
+    # Edits the hook left out (it keeps at most 5)
+    if ($Change -and [int]$Change.droppedEdits -gt 0) { [pscustomobject]@{ kind = 'edits'; text = [string][int]$Change.droppedEdits } }
 }
 
 # "Ctrl+Alt+Y" -> @{ mod; vk } for RegisterHotKey (mod includes MOD_NOREPEAT, 0x4000); $null when the
