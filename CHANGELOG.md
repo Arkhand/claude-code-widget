@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.5.1 (2026-10-13)
+
+- **Bigger XP orb in the Minecraft theme.** The status dot was a tiny speck because the orb picture has a transparent margin; the margin is now cropped and the dot is 14 px.
+
 ## 2.5.0 (2026-10-13)
 
 - **Minecraft theme.** Pick it in the Theme menu: square corners, a dirt frame with a strip of grass, XP orbs for the status dots, and Minecraft sounds (request, finished, all done). The first click downloads about 4 MB of textures and sounds from Mojang's servers into the plugin data folder (nothing from Mojang is in this repository); the theme switches on when the download ends. It is the only part of the widget that uses the internet.

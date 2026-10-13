@@ -528,8 +528,10 @@ namespace ClaudeWidget {
         $bi.Freeze()
         return $bi
     }
-    function New-McBrush($image, [bool]$tile) {
+    function New-McBrush($image, [bool]$tile, [bool]$core = $false) {
         $b = New-Object System.Windows.Media.ImageBrush $image
+        # The orb fills only the middle 8x8 of its 16x16 picture: show just that part
+        if ($core) { $b.Viewbox = New-Object System.Windows.Rect 0.25, 0.25, 0.5, 0.5 }
         if ($tile) {
             $b.TileMode = [System.Windows.Media.TileMode]::Tile
             $b.ViewportUnits = [System.Windows.Media.BrushMappingMode]::Absolute
@@ -542,7 +544,7 @@ namespace ClaudeWidget {
     function Set-ThemeExtras([string]$name) {
         if ($name -eq 'minecraft' -and (Get-MinecraftState $Data) -eq 'ready') {
             try {
-                $orb = New-McBrush (Get-McImage 'orb.png') $false
+                $orb = New-McBrush (Get-McImage 'orb.png') $false $true
                 $dirt = New-McBrush (Get-McImage 'dirt.png') $true
                 $grass = New-McBrush (Get-McImage 'grass.png') $true
                 $ui.Card.BorderBrush = $dirt
@@ -550,7 +552,7 @@ namespace ClaudeWidget {
                 $ui.Card.CornerRadius = New-Object System.Windows.CornerRadius 0
                 $ui.GrassTop.Background = $grass
                 $ui.GrassTop.Visibility = 'Visible'
-                foreach ($d in 'IdleDot', 'ReqDot', 'QDot') { $ui[$d].Fill = $orb }
+                foreach ($d in 'IdleDot', 'ReqDot', 'QDot') { $ui[$d].Fill = $orb; $ui[$d].Width = 14; $ui[$d].Height = 14 }
                 $script:mcExtras = $true
                 return
             } catch { Write-Log $_ }
@@ -563,6 +565,9 @@ namespace ClaudeWidget {
         $ui.IdleDot.Fill = Get-Brush '#5FB98A'
         $ui.ReqDot.Fill = Get-Brush '#D97757'
         $ui.QDot.Fill = Get-Brush '#7AA2F7'
+        $ui.IdleDot.Width = 8
+        $ui.IdleDot.Height = 8
+        foreach ($d in 'ReqDot', 'QDot') { $ui[$d].Width = 10; $ui[$d].Height = 10 }
         $script:mcExtras = $false
     }
     # Every way of changing the theme goes through here: colors, then textures, then sounds
