@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.5.4 (2026-10-13)
+
+- Internal: `widget.ps1` is 400 lines shorter. The window layout moved to `widget.xaml` and the Win32 helper code to `widget-native.cs`, both loaded by `widget.ps1` at start. No change in behavior.
+
+## 2.5.3 (2026-10-13)
+
+- The diff no longer shows an extra empty line when the text ends with a newline, and says when the hook left out edits (it keeps 5).
+- The hotkey for "do not disturb" always reads the current state; the idle pill tooltip is not replaced while it is open; session ages go to hours after 60 minutes; sound scheme entries given as a bare file name are found in the Windows Media folder.
+- README: hotkey variables need a restart, AltGr note, what the local destination means, and "do not disturb" keeps the widget hidden.
+
 ## 2.5.2 (2026-10-13)
 
 - Small fixes: `prefs.json` is saved whole-file-at-once and a failed save is logged; a sound file Windows cannot play is logged; the README lists the `prefs.json` fields.

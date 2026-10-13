@@ -74,62 +74,7 @@ try {
     # (NoActivate), and allow focus only while typing a free-text answer
     $script:canFocus = $false
     try {
-        Add-Type -TypeDefinition @'
-using System;
-using System.Text;
-using System.Runtime.InteropServices;
-namespace ClaudeWidget {
-    public static class WinFocus {
-        delegate bool EnumProc(IntPtr h, IntPtr l);
-        [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr l);
-        [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
-        [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
-        [DllImport("user32.dll")] static extern bool IsIconic(IntPtr h);
-        [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int cmd);
-        [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
-        [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
-        [DllImport("user32.dll")] static extern bool IsWindow(IntPtr h);
-        [DllImport("user32.dll")] static extern bool DestroyIcon(IntPtr h);
-        [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr h, int index);
-        [DllImport("user32.dll")] static extern int SetWindowLong(IntPtr h, int index, int value);
-        const int GWL_EXSTYLE = -20;
-        const int WS_EX_NOACTIVATE = 0x08000000;
-        // On: clicks still reach the buttons, but the window never steals focus
-        public static void SetNoActivate(IntPtr h, bool on) {
-            int ex = GetWindowLong(h, GWL_EXSTYLE);
-            SetWindowLong(h, GWL_EXSTYLE, on ? (ex | WS_EX_NOACTIVATE) : (ex & ~WS_EX_NOACTIVATE));
-        }
-        public static void DestroyIconHandle(IntPtr h) { DestroyIcon(h); }
-        public static IntPtr Foreground() { return GetForegroundWindow(); }
-        public static bool Activate(IntPtr h) { return SetForegroundWindow(h); }
-        // A session's remembered window (VS Code or terminal), if it still exists
-        public static bool FocusHandle(long handle) {
-            var h = new IntPtr(handle);
-            if (handle == 0 || !IsWindow(h)) return false;
-            if (IsIconic(h)) ShowWindow(h, 9);
-            return SetForegroundWindow(h);
-        }
-        public static string Title(IntPtr h) {
-            var sb = new StringBuilder(512);
-            GetWindowText(h, sb, 512);
-            return sb.ToString();
-        }
-        // Visible windows whose title contains app, topmost first
-        public static IntPtr[] FindWindows(string app) {
-            var found = new System.Collections.Generic.List<IntPtr>();
-            EnumWindows((h, l) => {
-                if (IsWindowVisible(h) && Title(h).IndexOf(app, StringComparison.OrdinalIgnoreCase) >= 0) found.Add(h);
-                return true;
-            }, IntPtr.Zero);
-            return found.ToArray();
-        }
-    }
-    public static class HotKeys {
-        [DllImport("user32.dll")] public static extern bool RegisterHotKey(IntPtr h, int id, uint mod, uint vk);
-        [DllImport("user32.dll")] public static extern bool UnregisterHotKey(IntPtr h, int id);
-    }
-}
-'@
+        Add-Type -TypeDefinition ([IO.File]::ReadAllText((Join-Path $PSScriptRoot 'widget-native.cs'), $Utf8))
         $script:canFocus = $true
     } catch { Write-Log $_ }
 
@@ -140,6 +85,8 @@ namespace ClaudeWidget {
         try {
             $key = Get-Item -LiteralPath "HKCU:\AppEvents\Schemes\Apps\.Default\$soundEvent\.Current" -ErrorAction Stop
             $path = [Environment]::ExpandEnvironmentVariables([string]$key.GetValue(''))
+            # An entry that is only a file name lives in the Windows Media folder
+            if ($path -and -not [IO.Path]::IsPathRooted($path)) { $path = Join-Path (Join-Path $env:WINDIR 'Media') $path }
             if ($path -and (Test-Path -LiteralPath $path)) { return $path }
         } catch {}
         return $null
@@ -185,196 +132,8 @@ namespace ClaudeWidget {
         & $fallback
     }
 
-    [xml]$xaml = @'
-<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Claude Code" SizeToContent="WidthAndHeight"
-        WindowStyle="None" AllowsTransparency="True" Background="Transparent"
-        Topmost="True" ShowInTaskbar="False" ShowActivated="False" ResizeMode="NoResize"
-        WindowStartupLocation="Manual" FontFamily="Segoe UI">
-  <Window.Resources>
-    <Style x:Key="Btn" TargetType="Button">
-      <Setter Property="Foreground" Value="#FFFFFF"/>
-      <Setter Property="FontSize" Value="13"/>
-      <Setter Property="FontWeight" Value="SemiBold"/>
-      <Setter Property="Height" Value="36"/>
-      <Setter Property="Padding" Value="18,0"/>
-      <Setter Property="Cursor" Value="Hand"/>
-      <Setter Property="BorderThickness" Value="1"/>
-      <Setter Property="Focusable" Value="False"/>
-      <Setter Property="Template">
-        <Setter.Value>
-          <ControlTemplate TargetType="Button">
-            <Border x:Name="bd" CornerRadius="8" Background="{TemplateBinding Background}"
-                    BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}"
-                    Padding="{TemplateBinding Padding}">
-              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-            </Border>
-            <ControlTemplate.Triggers>
-              <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="bd" Property="Opacity" Value="0.85"/></Trigger>
-              <Trigger Property="IsPressed" Value="True"><Setter TargetName="bd" Property="Opacity" Value="0.7"/></Trigger>
-            </ControlTemplate.Triggers>
-          </ControlTemplate>
-        </Setter.Value>
-      </Setter>
-    </Style>
-    <Style x:Key="Chip" TargetType="Border">
-      <Setter Property="CornerRadius" Value="6"/>
-      <Setter Property="Padding" Value="9,3"/>
-      <Setter Property="Margin" Value="0,0,6,0"/>
-    </Style>
-    <!-- Slim dark scrollbar (the default Windows one is light gray) -->
-    <Style TargetType="ScrollBar">
-      <Setter Property="Width" Value="8"/>
-      <Setter Property="MinWidth" Value="8"/>
-      <Setter Property="Template">
-        <Setter.Value>
-          <ControlTemplate TargetType="ScrollBar">
-            <Track x:Name="PART_Track" IsDirectionReversed="True">
-              <Track.Thumb>
-                <Thumb>
-                  <Thumb.Template>
-                    <ControlTemplate TargetType="Thumb">
-                      <Border Margin="3,0,0,0" CornerRadius="2.5" Background="#4A4A54"/>
-                    </ControlTemplate>
-                  </Thumb.Template>
-                </Thumb>
-              </Track.Thumb>
-            </Track>
-          </ControlTemplate>
-        </Setter.Value>
-      </Setter>
-    </Style>
-  </Window.Resources>
-
-  <Border x:Name="Card" Margin="14" CornerRadius="14" Background="#1E1E22" BorderBrush="#34343B" BorderThickness="1">
-    <Border.Effect><DropShadowEffect BlurRadius="20" ShadowDepth="3" Opacity="0.5" Color="Black"/></Border.Effect>
-    <Grid>
-      <Border x:Name="GrassTop" Height="8" VerticalAlignment="Top" Margin="-6,-6,-6,0"
-              IsHitTestVisible="False" Visibility="Collapsed"/>
-
-
-      <StackPanel x:Name="IdlePanel" Orientation="Vertical" Margin="14,9,16,9" Background="Transparent">
-        <StackPanel Orientation="Horizontal">
-          <Ellipse x:Name="IdleDot" Width="8" Height="8" Fill="#5FB98A" VerticalAlignment="Center" Margin="0,0,9,0"/>
-          <TextBlock x:Name="IdleTitle" Text="Claude Code" Foreground="#E8E8EC" FontSize="12.5" FontWeight="SemiBold" VerticalAlignment="Center"/>
-          <TextBlock x:Name="IdleText" Foreground="#7E7E88" FontSize="12" VerticalAlignment="Center"/>
-        </StackPanel>
-        <StackPanel x:Name="SessionsList" Margin="0,8,0,0" Visibility="Collapsed"/>
-      </StackPanel>
-
-      <StackPanel x:Name="ReqPanel" Width="440" Margin="20,16,20,18" Visibility="Collapsed">
-        <DockPanel Margin="0,0,0,12">
-          <TextBlock x:Name="Countdown" DockPanel.Dock="Right" Foreground="#7E7E88" FontSize="12" VerticalAlignment="Center"/>
-          <Ellipse x:Name="ReqDot" Width="10" Height="10" Fill="#D97757" VerticalAlignment="Center" Margin="0,0,10,0"/>
-          <TextBlock Text="Claude Code" Foreground="#F4F4F6" FontSize="14.5" FontWeight="SemiBold" VerticalAlignment="Center"/>
-          <TextBlock x:Name="ReqTitle" Foreground="#8A8A93" FontSize="12.5" VerticalAlignment="Center"/>
-        </DockPanel>
-
-        <WrapPanel Margin="0,0,0,10">
-          <Border Style="{StaticResource Chip}" Background="#3A2A24">
-            <TextBlock x:Name="Tool" Foreground="#F0A58A" FontSize="12" FontWeight="SemiBold"/>
-          </Border>
-          <Border x:Name="ProjectChip" Style="{StaticResource Chip}" Background="#26262C" BorderBrush="#34343B" BorderThickness="1">
-            <TextBlock x:Name="Project" Foreground="#C8C8D0" FontSize="12"/>
-          </Border>
-          <Border x:Name="QueueChip" Style="{StaticResource Chip}" Background="#2E2A1E" Visibility="Collapsed">
-            <TextBlock x:Name="QueueText" Foreground="#E8C770" FontSize="12" FontWeight="SemiBold"/>
-          </Border>
-        </WrapPanel>
-
-        <TextBlock x:Name="Desc" Foreground="#DADAE0" FontSize="13.5" TextWrapping="Wrap" Margin="0,0,0,10"/>
-
-        <Border CornerRadius="8" Background="#141417" BorderBrush="#2C2C33" BorderThickness="1" Padding="12,9">
-          <TextBox x:Name="Detail" IsReadOnly="True" Background="Transparent" BorderThickness="0"
-                   Foreground="#E8E8EC" FontFamily="Cascadia Mono, Consolas" FontSize="12"
-                   TextWrapping="Wrap" MaxHeight="160" VerticalScrollBarVisibility="Auto"
-                   SelectionBrush="#D97757"/>
-        </Border>
-        <Border x:Name="ChangeBox" CornerRadius="8" Background="#141417" BorderBrush="#2C2C33" BorderThickness="1" Margin="0,8,0,0" Visibility="Collapsed">
-          <ScrollViewer MaxHeight="220" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" Focusable="False">
-            <StackPanel x:Name="ChangeLines" Margin="0,4,0,4"/>
-          </ScrollViewer>
-        </Border>
-
-        <TextBlock x:Name="Cwd" Foreground="#6E6E78" FontSize="11" Margin="2,8,0,0" TextTrimming="CharacterEllipsis"/>
-
-        <DockPanel Margin="0,16,0,0" LastChildFill="False">
-          <Button x:Name="BtnApprove" Style="{StaticResource Btn}"
-                  Background="#D97757" BorderBrush="#D97757" DockPanel.Dock="Left"/>
-          <Button x:Name="BtnDeny" Style="{StaticResource Btn}"
-                  Background="Transparent" BorderBrush="#6A3A3A" Foreground="#F29090"
-                  Margin="8,0,0,0" DockPanel.Dock="Left"/>
-          <Button x:Name="BtnVs" Style="{StaticResource Btn}"
-                  Background="#2A2A30" BorderBrush="#3A3A42" Foreground="#C8C8D0" DockPanel.Dock="Right"/>
-        </DockPanel>
-        <WrapPanel x:Name="AlwaysList" Margin="0,10,0,0" Visibility="Collapsed"/>
-      </StackPanel>
-
-      <StackPanel x:Name="QPanel" Width="460" Margin="20,16,20,18" Visibility="Collapsed">
-        <DockPanel Margin="0,0,0,12">
-          <TextBlock x:Name="QCountdown" DockPanel.Dock="Right" Foreground="#7E7E88" FontSize="12" VerticalAlignment="Center"/>
-          <Ellipse x:Name="QDot" Width="10" Height="10" Fill="#7AA2F7" VerticalAlignment="Center" Margin="0,0,10,0"/>
-          <TextBlock Text="Claude Code" Foreground="#F4F4F6" FontSize="14.5" FontWeight="SemiBold" VerticalAlignment="Center"/>
-          <TextBlock x:Name="QTitle" Foreground="#8A8A93" FontSize="12.5" VerticalAlignment="Center"/>
-        </DockPanel>
-
-        <WrapPanel Margin="0,0,0,10">
-          <Border x:Name="QProjectChip" Style="{StaticResource Chip}" Background="#26262C" BorderBrush="#34343B" BorderThickness="1">
-            <TextBlock x:Name="QProject" Foreground="#C8C8D0" FontSize="12"/>
-          </Border>
-          <Border x:Name="QQueueChip" Style="{StaticResource Chip}" Background="#2E2A1E" Visibility="Collapsed">
-            <TextBlock x:Name="QQueueText" Foreground="#E8C770" FontSize="12" FontWeight="SemiBold"/>
-          </Border>
-        </WrapPanel>
-
-        <ScrollViewer MaxHeight="560" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-          <StackPanel x:Name="QList"/>
-        </ScrollViewer>
-
-        <DockPanel Margin="0,14,0,0" LastChildFill="False">
-          <Button x:Name="BtnAnswer" Style="{StaticResource Btn}"
-                  Background="#D97757" BorderBrush="#D97757" DockPanel.Dock="Left"/>
-          <Button x:Name="BtnQVs" Style="{StaticResource Btn}"
-                  Background="#2A2A30" BorderBrush="#3A3A42" Foreground="#C8C8D0" DockPanel.Dock="Right"/>
-        </DockPanel>
-      </StackPanel>
-
-      <StackPanel x:Name="DonePanel" Width="380" Margin="18,14,18,16" Visibility="Collapsed">
-        <DockPanel Margin="0,0,0,10">
-          <TextBlock x:Name="DoneAgo" DockPanel.Dock="Right" Foreground="#7E7E88" FontSize="12" VerticalAlignment="Center"/>
-          <Border Width="18" Height="18" CornerRadius="9" Background="#2F6F4E" VerticalAlignment="Center" Margin="0,0,9,0">
-            <TextBlock Text="&#10003;" Foreground="#FFFFFF" FontSize="11" FontWeight="Bold"
-                       HorizontalAlignment="Center" VerticalAlignment="Center"/>
-          </Border>
-          <TextBlock Text="Claude Code" Foreground="#F4F4F6" FontSize="14.5" FontWeight="SemiBold" VerticalAlignment="Center"/>
-          <TextBlock x:Name="DoneTitle" Foreground="#8A8A93" FontSize="12.5" VerticalAlignment="Center"/>
-        </DockPanel>
-
-        <WrapPanel Margin="0,0,0,8">
-          <Border x:Name="DoneProjectChip" Style="{StaticResource Chip}" Background="#26262C" BorderBrush="#34343B" BorderThickness="1">
-            <TextBlock x:Name="DoneProject" Foreground="#C8C8D0" FontSize="12"/>
-          </Border>
-          <Border x:Name="DoneMoreChip" Style="{StaticResource Chip}" Background="#1F2E26" Visibility="Collapsed">
-            <TextBlock x:Name="DoneMoreText" Foreground="#7FD1A4" FontSize="12" FontWeight="SemiBold"/>
-          </Border>
-        </WrapPanel>
-
-        <TextBlock x:Name="DoneMsg" Foreground="#C8C8D0" FontSize="13" TextWrapping="Wrap"
-                   TextTrimming="CharacterEllipsis" LineHeight="19" LineStackingStrategy="BlockLineHeight" MaxHeight="57"/>
-
-        <DockPanel Margin="0,14,0,0" LastChildFill="False">
-          <Button x:Name="BtnGoVs" Style="{StaticResource Btn}" Height="32"
-                  Background="#2F6F4E" BorderBrush="#2F6F4E" DockPanel.Dock="Left"/>
-          <Button x:Name="BtnDismiss" Style="{StaticResource Btn}" Height="32"
-                  Background="#2A2A30" BorderBrush="#3A3A42" Foreground="#C8C8D0" DockPanel.Dock="Right"/>
-        </DockPanel>
-      </StackPanel>
-
-    </Grid>
-  </Border>
-</Window>
-'@
+    # The window layout lives in widget.xaml next to this file
+    [xml]$xaml = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'widget.xaml'), $Utf8)
 
     $win = [Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader $xaml))
     $ui = @{}
@@ -662,6 +421,7 @@ namespace ClaudeWidget {
             $tb.TextWrapping = 'NoWrap'
             if ($l.kind -eq 'del') { $tb.Text = '- ' + $l.text; $tb.Background = Get-Brush '#3A1E1E'; $tb.Foreground = Get-Brush '#F29090' }
             elseif ($l.kind -eq 'add') { $tb.Text = '+ ' + $l.text; $tb.Background = Get-Brush '#1E3A2A'; $tb.Foreground = Get-Brush '#7FD3A0' }
+            elseif ($l.kind -eq 'edits') { $tb.Text = $S.diffMoreEdits -f $l.text; $tb.Foreground = Get-Brush '#7E7E88' }
             else { $tb.Text = $S.diffMore -f $l.text; $tb.Foreground = Get-Brush '#7E7E88' }
             [void]$ui.ChangeLines.Children.Add($tb)
         }
@@ -992,7 +752,7 @@ namespace ClaudeWidget {
             $dot.Fill = Get-Brush $(if ($r.waiting) { '#D97757' } else { '#5FB98A' })
             [System.Windows.Controls.DockPanel]::SetDock($dot, 'Left')
             $mins = [int][math]::Floor(((Get-NowMs) - [int64]$r.since) / 60000)
-            $age = New-TextBlock $(if ($mins -lt 1) { $S.now } else { $S.minutesAgo -f $mins }) 11.5 '#7E7E88'
+            $age = New-TextBlock $(if ($mins -lt 1) { $S.now } elseif ($mins -lt 60) { $S.minutesAgo -f $mins } else { $S.hoursAgo -f [math]::Floor($mins / 60) }) 11.5 '#7E7E88'
             $age.Margin = '14,0,0,0'
             $age.VerticalAlignment = 'Center'
             [System.Windows.Controls.DockPanel]::SetDock($age, 'Right')
@@ -1186,7 +946,9 @@ namespace ClaudeWidget {
         $ui.IdleTitle.Visibility = $v
         $ui.IdleText.Visibility = $v
         $status = if ($ui.IdleText.Text.Length -gt $Sep.Length) { $ui.IdleText.Text.Substring($Sep.Length) } else { '' }
-        $ui.IdlePanel.ToolTip = if ($min -and $status) { $status + [Environment]::NewLine + $S.idleTip } else { $S.idleTip }
+        $tip = if ($min -and $status) { $status + [Environment]::NewLine + $S.idleTip } else { $S.idleTip }
+        # Only when it changed: replacing a tooltip that is open would close it
+        if ($ui.IdlePanel.ToolTip -ne $tip) { $ui.IdlePanel.ToolTip = $tip }
     }
     function Set-Minimal { Update-IdleLook }
     # Right-click menu: each submenu lists fixed choices with the current one checked
@@ -1357,7 +1119,7 @@ namespace ClaudeWidget {
         # --- Global hotkeys (opt-in: CLAUDE_WIDGET_HOTKEYS=1) ---
         # Approve / deny act only on a permission card on screen; the third toggles "do not disturb"
         function Send-HotkeyDecision([string]$decision) {
-            if ($script:current -and $script:current.kind -eq 'permission' -and -not $script:dnd) { Send-Response $decision }
+            if ($script:current -and $script:current.kind -eq 'permission' -and -not (Test-Dnd $Data)) { Send-Response $decision }
         }
         $script:hotkeyActions = @{}
         $script:hotkeyIds = @()

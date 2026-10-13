@@ -90,7 +90,7 @@ The widget starts in the default corner again, because the new name comes with a
 
 - **Drag** the widget anywhere. It remembers the position.
 - **Double-click** the widget (outside its buttons) to bring back the session's window: on a "finished" notice, that session; otherwise, the session you typed in last.
-- **Right-click** opens the menu: **Theme**, **Opacity**, **Volume**, **Size**, **Minimal pill** (see [Look and sound](#look-and-sound)) and **Close widget**. Close hands pending requests back to VS Code, and the widget opens again with the next session or request.
+- **Right-click** opens the menu: **Theme**, **Opacity**, **Volume**, **Size**, **Minimal pill** (see [Look and sound](#look-and-sound)) and **Close widget**. Close hands pending requests back to VS Code, and the widget opens again with the next session or request (while "do not disturb" is on it stays hidden).
 - **Tray icon.** Left-click toggles **do not disturb**; right-click for the menu. In the mode, requests and questions go straight to VS Code, the widget is hidden and "finished" notices wait until you turn it off. It stays on until you turn it off, even after a restart. Windows may hide new tray icons: drag it onto the taskbar once.
 - With several requests or sessions, a chip shows how many are waiting (`+1 queued`), and they come one at a time.
 - The project chip also shows the session's title (the name from `/rename`, or Claude Code's automatic one). When several sessions were working and the last one finishes, its notice plays a different sound.
@@ -117,6 +117,8 @@ Set these environment variables in the `env` block of `~/.claude/settings.json`:
 | `CLAUDE_WIDGET_KEY_APPROVE` | `Ctrl+Alt+Y` | Hotkey that approves the permission card on screen. |
 | `CLAUDE_WIDGET_KEY_DENY` | `Ctrl+Alt+N` | Hotkey that denies it. |
 | `CLAUDE_WIDGET_KEY_DND` | `Ctrl+Alt+D` | Hotkey that turns "do not disturb" on and off. |
+
+The hotkey variables are read when the widget starts, so restart it after changing them (it restarts by itself with the next plugin update). Keys like AltGr combinations may not work as hotkeys. In the "Always allow" buttons, **only here (local)** means `.claude/settings.local.json`; a destination Claude Code adds in the future is shown as it is.
 
 ```json
 {
