@@ -1189,7 +1189,46 @@ namespace ClaudeWidget {
     function Sync-MenuChecks {
         foreach ($e in $script:prefItems) { $e.item.IsChecked = ($script:prefs[$e.key] -eq $e.value) }
     }
+    # The Minecraft theme is downloaded once, by mojang.ps1 in the background, after the first click
+    $script:mcWaiting = $false
+    $script:mcStarted = 0
+    function Start-MinecraftDownload {
+        try {
+            $script = Join-Path $PSScriptRoot 'mojang.ps1'
+            [void](Start-Process powershell.exe -WindowStyle Hidden -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"{0}"' -f $script), '-Dir', ('"{0}"' -f $Data))
+            $script:mcWaiting = $true
+            $script:mcStarted = Get-NowMs
+        } catch { Write-Log $_ }
+    }
+    # The menu item says what clicking it does: download, wait, or just use the theme
+    function Sync-MinecraftItem([string]$state) {
+        $e = @($script:prefItems | Where-Object { $_.key -eq 'theme' -and $_.value -eq 'minecraft' })[0]
+        if (-not $e) { return }
+        $e.item.Header = switch ($state) {
+            'ready' { $S.themeMinecraft }
+            'downloading' { $S.themeMinecraftBusy }
+            default { $(if ($script:mcWaiting) { $S.themeMinecraftBusy } else { $S.themeMinecraftDownload }) }
+        }
+    }
+    # Called every ~2 s: follows a download that this widget started
+    function Sync-Minecraft {
+        $state = Get-MinecraftState $Data
+        Sync-MinecraftItem $state
+        if (-not $script:mcWaiting) { return }
+        if ($state -eq 'ready') { $script:mcWaiting = $false; Set-Pref 'theme' 'minecraft'; Sync-MinecraftItem 'ready' }
+        elseif ($state -eq 'failed' -or ($state -eq 'none' -and ((Get-NowMs) - $script:mcStarted) -gt 30000)) {
+            $script:mcWaiting = $false
+            Write-Log ('minecraft theme: download failed: ' + (Get-MinecraftMessage $Data))
+            Sync-MinecraftItem $state
+        }
+    }
     function Set-Pref([string]$key, $value) {
+        # Minecraft needs its files first: the click starts the download and changes nothing yet
+        if ($key -eq 'theme' -and $value -eq 'minecraft' -and (Get-MinecraftState $Data) -ne 'ready') {
+            if (-not $script:mcWaiting -and (Get-MinecraftState $Data) -ne 'downloading') { Start-MinecraftDownload }
+            Sync-MinecraftItem (Get-MinecraftState $Data)
+            return
+        }
         $script:prefs[$key] = $value
         switch ($key) {
             'theme' { Set-LookTheme (Resolve-Theme $script:prefs.theme (Get-WindowsLightTheme)) }
@@ -1217,7 +1256,8 @@ namespace ClaudeWidget {
     Add-ChoiceMenu $menu $S.menuTheme @(
         @{ label = $S.themeDark; key = 'theme'; value = 'dark' }
         @{ label = $S.themeLight; key = 'theme'; value = 'light' }
-        @{ label = $S.themeAuto; key = 'theme'; value = 'auto' })
+        @{ label = $S.themeAuto; key = 'theme'; value = 'auto' }
+        @{ label = $S.themeMinecraftDownload; key = 'theme'; value = 'minecraft' })
     Add-ChoiceMenu $menu $S.menuOpacity @(foreach ($o in 1.0, 0.9, 0.8, 0.7, 0.6) { @{ label = ('{0}%' -f [int]($o * 100)); key = 'opacity'; value = [double]$o } })
     Add-ChoiceMenu $menu $S.menuVolume @(foreach ($v in 0, 25, 50, 75, 100) { @{ label = $(if ($v -eq 0) { $S.volumeMute } else { '{0}%' -f $v }); key = 'volume'; value = [int]$v } })
     Add-ChoiceMenu $menu $S.menuScale @(foreach ($z in 1.0, 1.25, 1.5) { @{ label = ('{0}%' -f [int]($z * 100)); key = 'scale'; value = [double]$z } })
@@ -1233,6 +1273,7 @@ namespace ClaudeWidget {
     [void]$menu.Items.Add($closeItem)
     $ui.Card.ContextMenu = $menu
     Sync-MenuChecks
+    Sync-MinecraftItem (Get-MinecraftState $Data)
     # The README screenshots are always drawn at normal opacity and size
     if (-not $RenderMode) {
         Set-Opacity
@@ -1461,6 +1502,7 @@ namespace ClaudeWidget {
                     Write-Log ('screens changed: anchor {0},{1} ({2})' -f [int]$a.right, [int]$a.bottom, $(if ($a.saved) { 'saved' } else { 'default' }))
                 }
             } catch { Write-Log $_ }
+            try { Sync-Minecraft } catch { Write-Log $_ }
         }
     })
     $win.Add_Closed({
