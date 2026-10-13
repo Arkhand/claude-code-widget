@@ -136,9 +136,9 @@ namespace ClaudeWidget {
     # Sounds go through Play-Sound so that the volume setting applies. The WPF MediaPlayer has a Volume;
     # the classic Windows sound APIs do not, so they are only the fallback (the volume is ignored there,
     # but 0 still means silence).
-    function Get-SchemeSound([string]$event) {
+    function Get-SchemeSound([string]$soundEvent) {
         try {
-            $key = Get-Item -LiteralPath "HKCU:\AppEvents\Schemes\Apps\.Default\$event\.Current" -ErrorAction Stop
+            $key = Get-Item -LiteralPath "HKCU:\AppEvents\Schemes\Apps\.Default\$soundEvent\.Current" -ErrorAction Stop
             $path = [Environment]::ExpandEnvironmentVariables([string]$key.GetValue(''))
             if ($path -and (Test-Path -LiteralPath $path)) { return $path }
         } catch {}
@@ -150,7 +150,7 @@ namespace ClaudeWidget {
         try {
             $p = New-Object System.Windows.Media.MediaPlayer
             # A file Windows cannot decode: forget it, so that the next play uses the system sound
-            $p.Add_MediaFailed({ param($src, $e) foreach ($k in @($script:sounds.Keys)) { if ([object]::ReferenceEquals($script:sounds[$k], $src)) { $script:sounds[$k] = $null } } })
+            $p.Add_MediaFailed({ param($src, $e) foreach ($k in @($script:sounds.Keys)) { if ([object]::ReferenceEquals($script:sounds[$k], $src)) { $script:sounds[$k] = $null; Write-Log "sound $k cannot be played, using the system sound" } } })
             $p.Open([Uri]$file)
             return $p
         } catch { Write-Log $_; return $null }
@@ -1241,7 +1241,7 @@ namespace ClaudeWidget {
             'scale' { Set-Scale }
             'minimal' { Set-Minimal }
         }
-        [void](Save-Prefs $Data $script:prefs)
+        if (-not (Save-Prefs $Data $script:prefs)) { Write-Log 'could not save prefs.json' }
         Sync-MenuChecks
     }
     function Add-ChoiceMenu($parent, [string]$header, $choices) {
