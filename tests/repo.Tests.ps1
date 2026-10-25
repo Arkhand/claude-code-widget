@@ -135,10 +135,11 @@ Describe 'repository rules' {
         $files | Where-Object { $_ -match '\.(ogg|wav)$' } | Should -BeNullOrEmpty
         $files | Where-Object { $_ -match '\.png$' -and $_ -match '(?i)minecraft|dirt|grass|orb|creeper' } | Should -BeNullOrEmpty
     }
-    # Since 2.6.0 (Minecraft theme gone) the widget never uses the network: keep it that way
+    # Since 2.6.0 (Minecraft theme gone) the widget never uses the network: keep it that way.
+    # telegram.ps1 (2.7.0) is the one network file; its own rule comes with the 2.7.0 repo checks.
     It 'the plugin scripts make no network calls' {
         $dir = Join-Path $repo 'plugins\opaiva-code-widget\scripts'
-        $hits = Get-ChildItem -LiteralPath $dir -File | Select-String -Pattern 'HttpWebRequest|WebClient|HttpClient|Invoke-WebRequest|Invoke-RestMethod|Net\.Sockets'
+        $hits = Get-ChildItem -LiteralPath $dir -File | Where-Object { $_.Name -ne 'telegram.ps1' } | Select-String -Pattern 'HttpWebRequest|WebClient|HttpClient|Invoke-WebRequest|Invoke-RestMethod|Net\.Sockets'
         $hits | Should -BeNullOrEmpty
     }
     It 'widget.ps1 has no handler parameter named like the strings table ($S)' {
