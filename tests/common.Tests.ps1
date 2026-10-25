@@ -786,3 +786,61 @@ Describe 'Get-ClaudeSettingsEnv' {
         (Get-ClaudeSettingsEnv $p).Count | Should -Be 0
     }
 }
+
+Describe 'Telegram connection storage' {
+    BeforeAll { $script:FakeToken = '123456:TEST-not-a-real-token' }
+    BeforeEach {
+        $script:Dir = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:Dir | Out-Null
+    }
+
+    It 'round-trips token, chat, bot and name' {
+        Save-TelegramConfig $script:Dir $script:FakeToken '987654321' 'my_test_bot' 'Dani' | Should -BeTrue
+        $c = Read-TelegramConfig $script:Dir
+        $c.token | Should -BeExactly $script:FakeToken
+        $c.chat | Should -BeExactly '987654321'
+        $c.bot | Should -BeExactly 'my_test_bot'
+        $c.name | Should -BeExactly 'Dani'
+    }
+    It 'never stores the token in clear' {
+        Save-TelegramConfig $script:Dir $script:FakeToken '1' 'b' 'n' | Out-Null
+        $text = [IO.File]::ReadAllText((Join-Path $script:Dir 'telegram.json'))
+        $text | Should -Not -Match ([regex]::Escape($script:FakeToken))
+        $text | Should -Not -Match 'not-a-real-token'
+    }
+    It 'overwrites an existing connection' {
+        Save-TelegramConfig $script:Dir $script:FakeToken '1' 'first_bot' 'A' | Should -BeTrue
+        Save-TelegramConfig $script:Dir '654321:TEST-other-fake' '2' 'second_bot' 'B' | Should -BeTrue
+        $c = Read-TelegramConfig $script:Dir
+        $c.token | Should -BeExactly '654321:TEST-other-fake'
+        $c.bot | Should -BeExactly 'second_bot'
+        Test-Path -LiteralPath (Join-Path $script:Dir 'telegram.json.tmp') | Should -BeFalse
+    }
+    It 'returns $null for a missing file' {
+        Read-TelegramConfig $script:Dir | Should -BeNullOrEmpty
+    }
+    It 'returns $null when the token cannot be decrypted (another user or garbage)' {
+        [IO.File]::WriteAllText((Join-Path $script:Dir 'telegram.json'), '{"token":"not-a-dpapi-blob","chat":"1","bot":"b","name":"n"}')
+        Read-TelegramConfig $script:Dir | Should -BeNullOrEmpty
+    }
+    It 'returns $null for a broken file' {
+        [IO.File]::WriteAllText((Join-Path $script:Dir 'telegram.json'), '{"token": ')
+        Read-TelegramConfig $script:Dir | Should -BeNullOrEmpty
+    }
+    It 'removes the connection and ignores a missing one' {
+        Save-TelegramConfig $script:Dir $script:FakeToken '1' 'b' 'n' | Out-Null
+        Remove-TelegramConfig $script:Dir
+        Test-Path -LiteralPath (Join-Path $script:Dir 'telegram.json') | Should -BeFalse
+        { Remove-TelegramConfig $script:Dir } | Should -Not -Throw
+    }
+    It 'Test-TelegramReady needs the file and the preference' {
+        Test-TelegramReady $script:Dir @{ telegram = $true } | Should -BeFalse
+        Save-TelegramConfig $script:Dir $script:FakeToken '1' 'b' 'n' | Out-Null
+        Test-TelegramReady $script:Dir @{ telegram = $false } | Should -BeFalse
+        Test-TelegramReady $script:Dir @{ telegram = $true } | Should -BeTrue
+    }
+    It 'Test-TelegramReady does not decrypt (a garbage token still counts as ready)' {
+        [IO.File]::WriteAllText((Join-Path $script:Dir 'telegram.json'), '{"token":"garbage"}')
+        Test-TelegramReady $script:Dir @{ telegram = $true } | Should -BeTrue
+    }
+}

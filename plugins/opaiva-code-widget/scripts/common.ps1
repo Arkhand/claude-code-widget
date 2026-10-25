@@ -493,3 +493,47 @@ function Test-WidgetOlder([string]$RunningScript, [string]$OwnScript) {
     if ($running -and $own) { return ($running -lt $own) }
     return $true
 }
+
+
+# ---------------- Telegram connection (telegram.json) ----------------
+
+# The token is encrypted with DPAPI (ConvertFrom-SecureString without a key): only this Windows user on this PC
+# can read it back, so the file is useless if it is copied or committed. chat, bot and name are not secret.
+# Returns $false (never throws) when it cannot write.
+function Save-TelegramConfig([string]$Dir, [string]$Token, [string]$Chat, [string]$Bot, [string]$Name) {
+    try {
+        $secure = ConvertTo-SecureString -String $Token -AsPlainText -Force
+        $o = [ordered]@{ token = (ConvertFrom-SecureString -SecureString $secure); chat = $Chat; bot = $Bot; name = $Name }
+        $path = Join-Path $Dir 'telegram.json'
+        # Write-JsonAtomic renames without overwriting, so an earlier connection has to go first
+        if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
+        Write-JsonAtomic $path $o
+        return $true
+    } catch { return $false }
+}
+
+# The saved connection with the token decrypted, or $null for a missing, broken or undecryptable file
+# (for example one copied from another user or PC). Only the sender and the setup wizard call this.
+function Read-TelegramConfig([string]$Dir) {
+    try {
+        $path = Join-Path $Dir 'telegram.json'
+        if (-not (Test-Path -LiteralPath $path)) { return $null }
+        $j = [IO.File]::ReadAllText($path, (Get-Utf8NoBom)) | ConvertFrom-Json
+        if (-not $j -or -not $j.token) { return $null }
+        $secure = ConvertTo-SecureString -String ([string]$j.token)
+        $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+        try { $token = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) } finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
+        return @{ token = $token; chat = [string]$j.chat; bot = [string]$j.bot; name = [string]$j.name }
+    } catch { return $null }
+}
+
+# Disconnects: deletes telegram.json. A missing file is fine.
+function Remove-TelegramConfig([string]$Dir) {
+    try { Remove-Item -LiteralPath (Join-Path $Dir 'telegram.json') -Force -ErrorAction SilentlyContinue } catch {}
+}
+
+# Is Telegram set up and switched on? Cheap on purpose (the hook asks on every event): it only checks that
+# the file exists and the preference is on, it never decrypts.
+function Test-TelegramReady([string]$Dir, $Prefs) {
+    return [bool]($Prefs -and $Prefs.telegram -and (Test-Path -LiteralPath (Join-Path $Dir 'telegram.json')))
+}
