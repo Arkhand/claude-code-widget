@@ -360,3 +360,65 @@ Describe 'ConvertTo-UpdatedPermission and New-PermissionOutput' {
         ConvertTo-AsciiJson $out | Should -BeExactly '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow","updatedPermissions":[{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"git *"}],"behavior":"allow","destination":"session"}]}}}'
     }
 }
+
+Describe 'Get-RequestTimeout' {
+    AfterEach { Remove-Item Env:\CLAUDE_WIDGET_WAIT_SECS -ErrorAction SilentlyContinue }
+    It 'is notifyAfter minutes in seconds (<minutes> -> <seconds>)' -ForEach @(
+        @{ minutes = 1; seconds = 60 }, @{ minutes = 3; seconds = 180 }, @{ minutes = 5; seconds = 300 }) {
+        Get-RequestTimeout @{ notifyAfter = $minutes } | Should -Be $seconds
+    }
+    It 'takes the tests-only CLAUDE_WIDGET_WAIT_SECS override' {
+        $env:CLAUDE_WIDGET_WAIT_SECS = '2'
+        Get-RequestTimeout @{ notifyAfter = 5 } | Should -Be 2
+    }
+}
+
+Describe 'Get-NotificationWaitKind' {
+    It 'is <kind> for <type>' -ForEach @(
+        @{ type = 'permission_prompt'; kind = 'permission' }
+        @{ type = 'elicitation_dialog'; kind = 'question' }
+        @{ type = 'elicitation_url_dialog'; kind = 'question' }) {
+        Get-NotificationWaitKind $type | Should -BeExactly $kind
+    }
+    It 'is nothing for <type>' -ForEach @(
+        @{ type = 'idle_prompt' }, @{ type = 'auth_success' }, @{ type = 'agent_needs_input' }, @{ type = 'elicitation_complete' }, @{ type = '' }) {
+        Get-NotificationWaitKind $type | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'Test-RequestPending' {
+    BeforeEach {
+        $q = Join-Path ([IO.Path]::GetTempPath()) ('ccw-q-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $q | Out-Null
+    }
+    AfterEach { Remove-Item -LiteralPath $q -Recurse -Force -ErrorAction SilentlyContinue }
+    It 'finds a request of that session only' {
+        Write-JsonAtomic (Join-Path $q 'req-1.json') @{ id = '1'; session = 'abc' }
+        Test-RequestPending $q 'abc' | Should -BeTrue
+        Test-RequestPending $q 'other' | Should -BeFalse
+    }
+    It 'is false without a queue folder or a session' {
+        Test-RequestPending (Join-Path $q 'missing') 'abc' | Should -BeFalse
+        Test-RequestPending $q '' | Should -BeFalse
+    }
+    It 'skips a request file it cannot read' {
+        [IO.File]::WriteAllText((Join-Path $q 'req-bad.json'), 'not json')
+        Test-RequestPending $q 'abc' | Should -BeFalse
+    }
+}
+
+Describe 'Get-AlertAction' {
+    It 'is <action> for decision "<decision>" / waitEnd "<waitEnd>"' -ForEach @(
+        @{ decision = 'vscode'; waitEnd = ''; action = 'wait' }
+        @{ decision = 'allow'; waitEnd = ''; action = $null }
+        @{ decision = 'deny'; waitEnd = ''; action = $null }
+        @{ decision = 'answer'; waitEnd = ''; action = $null }
+        @{ decision = ''; waitEnd = 'timeout'; action = 'timeout' }
+        @{ decision = ''; waitEnd = 'idle'; action = 'idle' }
+        @{ decision = ''; waitEnd = 'session ended'; action = $null }
+        @{ decision = ''; waitEnd = 'widget closed'; action = $null }
+        @{ decision = ''; waitEnd = 'do not disturb'; action = $null }) {
+        $res = if ($decision) { [pscustomobject]@{ decision = $decision } } else { $null }
+        Get-AlertAction $res $waitEnd | Should -Be $action
+    }
+}
