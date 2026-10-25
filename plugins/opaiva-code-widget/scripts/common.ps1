@@ -13,10 +13,13 @@ function Get-MutexName([string]$Dir) {
     return 'Local\ClaudeCodeWidget-' + (($hash[0..5] | ForEach-Object { $_.ToString('x2') }) -join '')
 }
 
-# Write to .tmp, then rename: readers never see a half-written file
-function Write-JsonAtomic([string]$Path, $Object) {
+# Write to .tmp, then rename: readers never see a half-written file. Create-only by default (the rename
+# fails if $Path exists). -Replace swaps in over an existing file atomically, and the old file is only
+# touched after the new one was written in full, so a failed write keeps it.
+function Write-JsonAtomic([string]$Path, $Object, [switch]$Replace) {
     [IO.File]::WriteAllText("$Path.tmp", ($Object | ConvertTo-Json -Depth 10 -Compress), (Get-Utf8NoBom))
-    [IO.File]::Move("$Path.tmp", $Path)
+    if ($Replace -and (Test-Path -LiteralPath $Path)) { [IO.File]::Replace("$Path.tmp", $Path, [NullString]::Value) }
+    else { [IO.File]::Move("$Path.tmp", $Path) }
 }
 
 # 'pt' or 'en'. Empty = the Windows display language; anything that is not Portuguese is English.
@@ -505,9 +508,8 @@ function Save-TelegramConfig([string]$Dir, [string]$Token, [string]$Chat, [strin
         $secure = ConvertTo-SecureString -String $Token -AsPlainText -Force
         $o = [ordered]@{ token = (ConvertFrom-SecureString -SecureString $secure); chat = $Chat; bot = $Bot; name = $Name }
         $path = Join-Path $Dir 'telegram.json'
-        # Write-JsonAtomic renames without overwriting, so an earlier connection has to go first
-        if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
-        Write-JsonAtomic $path $o
+        # -Replace: if the write fails the previous connection stays, the user is not silently disconnected
+        Write-JsonAtomic $path $o -Replace
         return $true
     } catch { return $false }
 }

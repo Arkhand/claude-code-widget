@@ -30,6 +30,25 @@ Describe 'Write-JsonAtomic' {
         ([IO.File]::ReadAllText($path, [Text.Encoding]::UTF8) | ConvertFrom-Json).text | Should -BeExactly $accented
         "$path.tmp" | Should -Not -Exist
     }
+    It '-Replace overwrites an existing file and leaves no .tmp' {
+        $path = Join-Path $TestDrive 'replace.json'
+        Write-JsonAtomic $path @{ v = 1 }
+        Write-JsonAtomic $path @{ v = 2 } -Replace
+        ([IO.File]::ReadAllText($path) | ConvertFrom-Json).v | Should -Be 2
+        "$path.tmp" | Should -Not -Exist
+    }
+    It '-Replace also creates a file that does not exist yet' {
+        $path = Join-Path $TestDrive 'replace-new.json'
+        Write-JsonAtomic $path @{ v = 1 } -Replace
+        ([IO.File]::ReadAllText($path) | ConvertFrom-Json).v | Should -Be 1
+        "$path.tmp" | Should -Not -Exist
+    }
+    It 'without -Replace still refuses to overwrite an existing file' {
+        $path = Join-Path $TestDrive 'create-only.json'
+        Write-JsonAtomic $path @{ v = 1 }
+        { Write-JsonAtomic $path @{ v = 2 } } | Should -Throw
+        ([IO.File]::ReadAllText($path) | ConvertFrom-Json).v | Should -Be 1
+    }
     It 'keeps objects nested deeper than 5 levels' {
         $path = Join-Path $TestDrive 'deep.json'
         Write-JsonAtomic $path @{ a = @{ b = @{ c = @{ d = @{ e = @{ f = 'deep' } } } } } }
@@ -815,6 +834,17 @@ Describe 'Telegram connection storage' {
         $c.token | Should -BeExactly '654321:TEST-other-fake'
         $c.bot | Should -BeExactly 'second_bot'
         Test-Path -LiteralPath (Join-Path $script:Dir 'telegram.json.tmp') | Should -BeFalse
+    }
+    It 'keeps the previous connection when saving fails' {
+        Save-TelegramConfig $script:Dir $script:FakeToken '1' 'first_bot' 'A' | Should -BeTrue
+        # A lock on the .tmp makes the new write fail, as a full disk or an antivirus lock would
+        $lock = [IO.File]::Open((Join-Path $script:Dir 'telegram.json.tmp'), 'Create', 'ReadWrite', 'None')
+        try {
+            Save-TelegramConfig $script:Dir '654321:TEST-other-fake' '2' 'second_bot' 'B' | Should -BeFalse
+        } finally { $lock.Dispose() }
+        $c = Read-TelegramConfig $script:Dir
+        $c.token | Should -BeExactly $script:FakeToken
+        $c.bot | Should -BeExactly 'first_bot'
     }
     It 'returns $null for a missing file' {
         Read-TelegramConfig $script:Dir | Should -BeNullOrEmpty
