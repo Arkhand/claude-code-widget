@@ -32,6 +32,21 @@ function Get-Strings([string]$Lang) {
     return ($json | ConvertFrom-Json).$Lang
 }
 
+# The "env" block of a Claude Code settings.json, as name -> string value. Never throws: a missing file, bad
+# JSON or no env block gives an empty table. The widget needs this because hook.ps1 starts it through WMI,
+# which does not pass the hook's environment on, so CLAUDE_WIDGET_* set in settings.json never reach it.
+function Get-ClaudeSettingsEnv([string]$Path) {
+    $result = @{}
+    try {
+        if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $result }
+        $json = [IO.File]::ReadAllText($Path, (Get-Utf8NoBom)).TrimStart([char]0xFEFF) | ConvertFrom-Json
+        $envBlock = $json.env
+        if ($envBlock -isnot [System.Management.Automation.PSCustomObject]) { return $result }
+        foreach ($p in $envBlock.PSObject.Properties) { $result[$p.Name] = [string]$p.Value }
+    } catch { $result = @{} }
+    return $result
+}
+
 function Get-NowMs { [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() }
 
 # Requests waiting for an answer, oldest first. Deletes orphans: expired, or the hook that wrote

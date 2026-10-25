@@ -750,3 +750,39 @@ Describe 'diff details' {
         $lines[-1].text | Should -Be '3'
     }
 }
+
+Describe 'Get-ClaudeSettingsEnv' {
+    It 'returns an empty table for a missing file' {
+        $e = Get-ClaudeSettingsEnv (Join-Path $TestDrive 'nope.json')
+        $e | Should -BeOfType [hashtable]
+        $e.Count | Should -Be 0
+    }
+    It 'returns the env values as strings' {
+        $p = Join-Path $TestDrive 'ok.json'
+        [IO.File]::WriteAllText($p, '{"env":{"A":"1","B":2}}')
+        $e = Get-ClaudeSettingsEnv $p
+        $e.A | Should -BeExactly '1'
+        $e.B | Should -BeExactly '2'
+        $e.B | Should -BeOfType [string]
+    }
+    It 'reads a file with a UTF-8 BOM' {
+        $p = Join-Path $TestDrive 'bom.json'
+        [IO.File]::WriteAllText($p, '{"env":{"A":"1"}}', (New-Object System.Text.UTF8Encoding $true))
+        (Get-ClaudeSettingsEnv $p).A | Should -BeExactly '1'
+    }
+    It 'returns an empty table for invalid JSON' {
+        $p = Join-Path $TestDrive 'bad.json'
+        [IO.File]::WriteAllText($p, '{"env": {')
+        (Get-ClaudeSettingsEnv $p).Count | Should -Be 0
+    }
+    It 'returns an empty table when there is no env key' {
+        $p = Join-Path $TestDrive 'noenv.json'
+        [IO.File]::WriteAllText($p, '{"model":"x"}')
+        (Get-ClaudeSettingsEnv $p).Count | Should -Be 0
+    }
+    It 'returns an empty table when env is not an object' {
+        $p = Join-Path $TestDrive 'strenv.json'
+        [IO.File]::WriteAllText($p, '{"env":"x"}')
+        (Get-ClaudeSettingsEnv $p).Count | Should -Be 0
+    }
+}

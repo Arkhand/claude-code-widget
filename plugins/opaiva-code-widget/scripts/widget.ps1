@@ -17,7 +17,9 @@ param(
     [string]$Lang = '',
     [string]$RenderSamples = '',
     [string]$OutDir = '',
-    [string]$Theme = ''
+    [string]$Theme = '',
+    # Claude Code settings: its "env" block holds the CLAUDE_WIDGET_* options (the widget is started through WMI)
+    [string]$SettingsPath = (Join-Path $env:USERPROFILE '.claude\settings.json')
 )
 $RenderMode = [bool]$RenderSamples
 $ErrorActionPreference = 'Stop'
@@ -33,6 +35,21 @@ $DoneMaxAgeMs = 5 * 60 * 1000
 
 $Lang = Resolve-Lang $Lang
 $S = Get-Strings $Lang
+
+# CLAUDE_WIDGET_* options: the settings.json env block (read once) wins over the process environment.
+# CLAUDE_WIDGET_NO_TRAY stays a plain environment variable: the tests set it for the widgets they start.
+$SettingsEnv = Get-ClaudeSettingsEnv $SettingsPath
+function Get-WidgetEnv([string]$Name) {
+    if ($SettingsEnv.ContainsKey($Name) -and $SettingsEnv[$Name]) { return [string]$SettingsEnv[$Name] }
+    $v = [Environment]::GetEnvironmentVariable($Name)
+    if ($v) { return $v }
+    return ''
+}
+# Same default as hook.ps1: 5 minutes without input counts as away
+$AwaySecs = 300
+$awayText = Get-WidgetEnv 'CLAUDE_WIDGET_AWAY_SECS'
+$awayParsed = 0
+if ([int]::TryParse($awayText, [ref]$awayParsed)) { $AwaySecs = $awayParsed }
 
 # Preferences (prefs.json): theme, opacity, volume, scale, minimal pill. The README screenshots
 # (-RenderSamples) always start from the defaults, plus -Theme.
@@ -1159,7 +1176,7 @@ try {
         }
         $script:hotkeyActions = @{}
         $script:hotkeyIds = @()
-        if ($env:CLAUDE_WIDGET_HOTKEYS -eq '1') {
+        if ((Get-WidgetEnv 'CLAUDE_WIDGET_HOTKEYS') -eq '1') {
             $hotkeyDefs = @(
                 @{ id = 1; name = 'CLAUDE_WIDGET_KEY_APPROVE'; text = 'Ctrl+Alt+Y'; action = { Send-HotkeyDecision 'allow' } }
                 @{ id = 2; name = 'CLAUDE_WIDGET_KEY_DENY'; text = 'Ctrl+Alt+N'; action = { Send-HotkeyDecision 'deny' } }
@@ -1182,7 +1199,7 @@ try {
                     }
                     $source.AddHook($script:hotkeyHook)
                     foreach ($d in $hotkeyDefs) {
-                        $text = [Environment]::GetEnvironmentVariable($d.name)
+                        $text = Get-WidgetEnv $d.name
                         if (-not $text) { $text = $d.text }
                         $hk = ConvertTo-Hotkey $text
                         if (-not $hk) { Write-Log "hotkey $($d.name): '$text' is not a valid hotkey"; continue }

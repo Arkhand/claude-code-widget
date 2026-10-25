@@ -55,6 +55,23 @@ namespace CcwTest {
 }
 '@
     }
+    if (-not ('CcwTest.HotKeyProbe' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+namespace CcwTest {
+    public static class HotKeyProbe {
+        [DllImport("user32.dll")] static extern bool RegisterHotKey(IntPtr h, int id, uint mod, uint vk);
+        [DllImport("user32.dll")] static extern bool UnregisterHotKey(IntPtr h, int id);
+        // True when another process already owns Ctrl+Alt+<vk> (a hotkey can be registered only once)
+        public static bool IsTaken(uint vk) {
+            if (RegisterHotKey(IntPtr.Zero, 0x7777, 0x4003, vk)) { UnregisterHotKey(IntPtr.Zero, 0x7777); return false; }
+            return true;
+        }
+    }
+}
+'@
+    }
 }
 AfterAll { $env:CLAUDE_WIDGET_NO_TRAY = $savedNoTray }
 
@@ -242,7 +259,8 @@ Describe 'widget.ps1 global hotkeys' -Tag 'Desktop' {
             [Environment]::SetEnvironmentVariable('CLAUDE_WIDGET_KEY_DND', 'Ctrl+Alt+F15')
             try {
                 return Start-Process powershell.exe -PassThru -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
-                    '-File', ('"{0}"' -f $widget), '-DataDir', ('"{0}"' -f $Data), '-Lang', 'en'
+                    '-File', ('"{0}"' -f $widget), '-DataDir', ('"{0}"' -f $Data), '-Lang', 'en',
+                    '-SettingsPath', ('"{0}"' -f (Join-Path $Data 'no-settings.json'))
             }
             finally { foreach ($n in $saved.Keys) { [Environment]::SetEnvironmentVariable($n, $saved[$n]) } }
         }
@@ -250,6 +268,25 @@ Describe 'widget.ps1 global hotkeys' -Tag 'Desktop' {
             $deadline = (Get-Date).AddSeconds($Seconds)
             while ((Get-Date) -lt $deadline) { if (Test-Path -LiteralPath $Path) { return $true }; Start-Sleep -Milliseconds 250 }
             return $false
+        }
+        # Starts the widget the way Start-Widget in hook.ps1 does (WMI: the caller's environment is not inherited).
+        # CLAUDE_WIDGET_NO_TRAY is set inside the command, because the test's own value does not reach it either.
+        function Start-WmiWidget([string]$Data, [string]$Settings) {
+            [IO.File]::WriteAllText((Join-Path $Data 'state.json'), '{"right":520,"bottom":330}')
+            $inner = "`$env:CLAUDE_WIDGET_NO_TRAY='1'; & '$widget' -DataDir '$Data' -Lang en -SettingsPath '$Settings'"
+            $cmd = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "{0}"' -f $inner
+            $si = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ ShowWindow = [uint16]0 }
+            $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $cmd; ProcessStartupInformation = $si }
+            return [int]$r.ProcessId
+        }
+        # Kills the WMI-started shell and the widget pid it recorded, then removes the data dir
+        function Stop-TestWidget([int]$ShellPid, [string]$Data) {
+            $widgetPid = 0
+            $json = Join-Path $Data 'widget.json'
+            if (Test-Path -LiteralPath $json) { try { $widgetPid = [int](([IO.File]::ReadAllText($json) | ConvertFrom-Json).pid) } catch {} }
+            foreach ($id in @($ShellPid, $widgetPid)) { if ($id) { Stop-Process -Id $id -Force -ErrorAction SilentlyContinue } }
+            Start-Sleep -Milliseconds 500
+            Remove-Item -LiteralPath $Data -Recurse -Force -ErrorAction SilentlyContinue
         }
         $CTRL = [byte]0x11
         $ALT = [byte]0x12
@@ -283,6 +320,40 @@ Describe 'widget.ps1 global hotkeys' -Tag 'Desktop' {
             [void]$proc.WaitForExit(5000)
             Remove-Item -LiteralPath $data -Recurse -Force -ErrorAction SilentlyContinue
         }
+    }
+    It 'a widget started through WMI sees the hotkey setting' {
+        # Start-Widget in hook.ps1 starts the widget through WMI, which drops the hook's environment:
+        # the settings.json env block is the only way the setting reaches the widget
+        $data = Join-Path ([IO.Path]::GetTempPath()) ('ccw-widget-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path (Join-Path $data 'queue') | Out-Null
+        $settings = Join-Path $data 'settings.json'
+        [IO.File]::WriteAllText($settings, '{"env":{"CLAUDE_WIDGET_HOTKEYS":"1","CLAUDE_WIDGET_KEY_APPROVE":"Ctrl+Alt+F13","CLAUDE_WIDGET_KEY_DENY":"Ctrl+Alt+F14","CLAUDE_WIDGET_KEY_DND":"Ctrl+Alt+F15"}}')
+        [CcwTest.HotKeyProbe]::IsTaken(0x7E) | Should -BeFalse
+        $ids = Start-WmiWidget $data $settings
+        try {
+            (Wait-ForFile (Join-Path $data 'widget.json') 30) | Should -BeTrue
+            Start-Sleep -Seconds 3
+            [CcwTest.HotKeyProbe]::IsTaken(0x7E) | Should -BeTrue
+            Join-Path $data 'widget.log' | Should -Not -Exist
+        }
+        finally { Stop-TestWidget $ids $data }
+    }
+    It 'a widget started through WMI does not see the caller environment' {
+        $data = Join-Path ([IO.Path]::GetTempPath()) ('ccw-widget-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path (Join-Path $data 'queue') | Out-Null
+        $settings = Join-Path $data 'settings.json'
+        [IO.File]::WriteAllText($settings, '{}')
+        $saved = @{}
+        $vars = @{ CLAUDE_WIDGET_HOTKEYS = '1'; CLAUDE_WIDGET_KEY_APPROVE = 'Ctrl+Alt+F13'; CLAUDE_WIDGET_KEY_DENY = 'Ctrl+Alt+F14'; CLAUDE_WIDGET_KEY_DND = 'Ctrl+Alt+F15' }
+        foreach ($n in $vars.Keys) { $saved[$n] = [Environment]::GetEnvironmentVariable($n); [Environment]::SetEnvironmentVariable($n, $vars[$n]) }
+        try { $ids = Start-WmiWidget $data $settings }
+        finally { foreach ($n in $saved.Keys) { [Environment]::SetEnvironmentVariable($n, $saved[$n]) } }
+        try {
+            (Wait-ForFile (Join-Path $data 'widget.json') 30) | Should -BeTrue
+            Start-Sleep -Seconds 3
+            [CcwTest.HotKeyProbe]::IsTaken(0x7E) | Should -BeFalse
+        }
+        finally { Stop-TestWidget $ids $data }
     }
     It 'does nothing when the hotkeys are not turned on' {
         $data = Join-Path ([IO.Path]::GetTempPath()) ('ccw-widget-' + [guid]::NewGuid().ToString('N'))
