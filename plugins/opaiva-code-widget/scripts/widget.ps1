@@ -29,7 +29,7 @@ $StatePath = Join-Path $Data 'state.json'
 # hook.ps1 creates this file to ask a widget from an older version to close itself (so its tray icon is removed)
 $QuitPath = Join-Path $Data 'quit.flag'
 $LogPath = Join-Path $Data 'widget.log'
-$DoneMaxAgeMs = 12 * 3600 * 1000
+$DoneMaxAgeMs = 5 * 60 * 1000
 
 $Lang = Resolve-Lang $Lang
 $S = Get-Strings $Lang
@@ -102,21 +102,12 @@ try {
             return $p
         } catch { Write-Log $_; return $null }
     }
-    # The sounds in use: the Windows ones, or the Minecraft ones once the theme is downloaded
-    function Set-SoundSet([string]$theme) {
-        if ($RenderMode) { return }
-        if ($theme -eq 'minecraft' -and (Get-MinecraftState $Data) -eq 'ready') {
-            $script:sounds.request = New-MediaSound (Get-MinecraftFile $Data 'sounds' 'xp.ogg')
-            $script:sounds.done = New-MediaSound (Get-MinecraftFile $Data 'sounds' 'pop.ogg')
-            $script:sounds.allDone = New-MediaSound (Get-MinecraftFile $Data 'sounds' 'levelup.ogg')
-        }
-        else {
-            $script:sounds.request = New-MediaSound (Get-SchemeSound 'SystemAsterisk')
-            $script:sounds.done = New-MediaSound (Join-Path $env:WINDIR 'Media\Windows Notify System Generic.wav')
-            $script:sounds.allDone = New-MediaSound (Join-Path $env:WINDIR 'Media\tada.wav')
-        }
+    # The sounds in use: the Windows ones
+    if (-not $RenderMode) {
+        $script:sounds.request = New-MediaSound (Get-SchemeSound 'SystemAsterisk')
+        $script:sounds.done = New-MediaSound (Join-Path $env:WINDIR 'Media\Windows Notify System Generic.wav')
+        $script:sounds.allDone = New-MediaSound (Join-Path $env:WINDIR 'Media\tada.wav')
     }
-    Set-SoundSet 'dark'
     function Play-Sound([string]$name, [scriptblock]$fallback) {
         $vol = [int]$script:prefs.volume
         if ($vol -le 0) { return }
@@ -134,14 +125,20 @@ try {
 
     # The window layout lives in widget.xaml next to this file
     [xml]$xaml = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'widget.xaml'), $Utf8)
+    # The "finished" box is a template, copied once per notice (New-DoneItem): out of the window it goes.
+    # Copies are parsed on their own, without the window's resources: New-DoneItem sets their styles.
+    $xns = New-Object System.Xml.XmlNamespaceManager $xaml.NameTable
+    $xns.AddNamespace('x', 'http://schemas.microsoft.com/winfx/2006/xaml')
+    $doneNode = $xaml.SelectSingleNode("//*[@x:Name='DoneItem']", $xns)
+    $DoneItemXaml = $doneNode.OuterXml -replace ' Style="\{StaticResource \w+\}"', ''
+    [void]$doneNode.ParentNode.RemoveChild($doneNode)
 
     $win = [Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader $xaml))
     $ui = @{}
-    foreach ($n in 'Card', 'IdlePanel', 'IdleDot', 'GrassTop', 'IdleTitle', 'IdleText', 'SessionsList', 'ChangeBox', 'ChangeLines', 'AlwaysList', 'ReqPanel', 'ReqTitle', 'QPanel', 'QTitle', 'DonePanel', 'DoneTitle',
+    foreach ($n in 'Card', 'IdlePanel', 'IdleDot', 'IdleTitle', 'IdleText', 'SessionsList', 'ChangeBox', 'ChangeLines', 'AlwaysList', 'ReqPanel', 'ReqTitle', 'QPanel', 'QTitle', 'DonePanel',
         'ReqDot', 'Countdown', 'Tool', 'ProjectChip', 'Project', 'QueueChip', 'QueueText', 'Desc', 'Detail', 'Cwd',
         'BtnApprove', 'BtnDeny', 'BtnVs', 'QCountdown', 'QDot', 'QProjectChip', 'QProject', 'QQueueChip', 'QQueueText',
-        'QList', 'BtnAnswer', 'BtnQVs', 'DoneAgo', 'DoneProjectChip', 'DoneProject', 'DoneMoreChip', 'DoneMoreText',
-        'DoneMsg', 'BtnGoVs', 'BtnDismiss') {
+        'QList', 'BtnAnswer', 'BtnQVs') {
         $ui[$n] = $win.FindName($n)
     }
 
@@ -152,14 +149,11 @@ try {
     $ui.IdlePanel.ToolTip = $S.idleTip
     $ui.ReqTitle.Text = $Sep + $S.permissionTitle
     $ui.QTitle.Text = $Sep + $S.questionTitle
-    $ui.DoneTitle.Text = $Sep + $S.doneTitle
     $ui.BtnApprove.Content = $S.approve
     $ui.BtnDeny.Content = $S.deny
     $ui.BtnVs.Content = $S.decideInVsCode
     $ui.BtnAnswer.Content = $S.answer
     $ui.BtnQVs.Content = $S.answerInVsCode
-    $ui.BtnGoVs.Content = $S.goToVsCode
-    $ui.BtnDismiss.Content = $S.ok
 
     # --- Position: anchored by the bottom-right corner, so the card grows up/left ---
     # $script:savedAnchor is where you last dragged it (state.json). While that spot is on no screen
@@ -172,6 +166,12 @@ try {
     $wa = [System.Windows.SystemParameters]::WorkArea
     $script:anchorRight = $wa.Right
     $script:anchorBottom = $wa.Bottom
+    # The widget keeps its top edge: everything grows downwards from there, and only moves up when it
+    # would go past the bottom of its screen. $null = not known yet: the first layout takes it from
+    # the bottom corner (no saved spot, or a state.json from before "top").
+    $script:anchorTop = $null
+    # The work area of the screen the widget is on: it never crosses into the next screen
+    $script:area = @{ left = $wa.Left; top = $wa.Top; right = $wa.Right; bottom = $wa.Bottom }
     $script:screenKey = $null
     # Re-resolves the anchor if the screens changed since the last call. Returns the new anchor
     # (@{ right; bottom; saved }), or $null when nothing changed.
@@ -184,14 +184,41 @@ try {
         if ($a) {
             $script:anchorRight = $a.right
             $script:anchorBottom = $a.bottom
+            $script:anchorTop = if ($a.saved -and $null -ne $script:savedAnchor.top) { [double]$script:savedAnchor.top } else { $null }
+            Set-Area $areas
         }
         return $a
+    }
+    # The screen the widget is on: the one under the point x, y (by default just inside its top-right
+    # corner; a saved spot always lies within one screen, see the drag handler)
+    function Set-Area($areas, [double]$x = ($script:anchorRight - 60), [double]$y = -1) {
+        if ($y -lt 0) { $y = $(if ($null -ne $script:anchorTop) { $script:anchorTop } else { $script:anchorBottom - 60 }) + 20 }
+        foreach ($s in @($areas | Where-Object { $_ })) {
+            if ($x -ge $s.left -and $x -lt $s.right -and $y -ge $s.top -and $y -lt $s.bottom) { $script:area = $s }
+        }
     }
     try { [void](Sync-Anchor) } catch { Write-Log $_ }
 
     function Update-Position {
-        $win.Left = [math]::Max([System.Windows.SystemParameters]::VirtualScreenLeft, $script:anchorRight - $win.ActualWidth)
-        $win.Top = [math]::Max([System.Windows.SystemParameters]::VirtualScreenTop, $script:anchorBottom - $win.ActualHeight)
+        # While you drag it, the widget goes where the mouse takes it (to another screen too)
+        if ($script:dragging) { return }
+        $right = [math]::Min($script:anchorRight, $script:area.right)
+        $win.Left = [math]::Max($script:area.left, $right - $win.ActualWidth)
+        if ($null -eq $script:anchorTop) { $script:anchorTop = $script:anchorBottom - $win.ActualHeight }
+        $now = $win.Top
+        # The stack of "finished" boxes never moves its top down while open (closing one moves the
+        # ones below it up); it only moves up when a new box would not fit on the screen
+        $from = if ($script:cardClear) { $now } else { $script:anchorTop }
+        $top = [math]::Max($script:area.top, [math]::Min($from, $script:area.bottom - $win.ActualHeight))
+        # A long way back (the pill returning to its spot after the stack): slide there
+        $win.BeginAnimation([System.Windows.Window]::TopProperty, $null)
+        $win.Top = $top
+        if (-not $RenderMode -and -not $script:cardClear -and [math]::Abs($top - $now) -gt 40) {
+            $slide = [System.Windows.Media.Animation.DoubleAnimation]::new($now, $top, [System.Windows.Duration]::new([TimeSpan]::FromMilliseconds(250)))
+            $slide.EasingFunction = New-Object System.Windows.Media.Animation.CubicEase
+            $slide.FillBehavior = 'Stop'
+            $win.BeginAnimation([System.Windows.Window]::TopProperty, $slide)
+        }
     }
     $win.Left = $script:anchorRight - 220
     $win.Top = $script:anchorBottom - 70
@@ -213,14 +240,24 @@ try {
         if ($e.ClickCount -eq 2) { $script:clickTimer.Stop(); Invoke-DoubleClick; return }
         $left = $win.Left
         $top = $win.Top
-        try { $win.DragMove() } catch {}
+        $win.BeginAnimation([System.Windows.Window]::TopProperty, $null)
+        $script:dragging = $true
+        try { $win.DragMove() } catch {} finally { $script:dragging = $false }
         # A click without a move keeps the saved spot (its monitor may be unplugged right now);
         # on the idle pill it opens or closes the sessions list
         # (after the double-click time, so that a double click does not also toggle the list)
         if ($win.Left -eq $left -and $win.Top -eq $top) { $script:clickTimer.Stop(); $script:clickTimer.Start(); return }
+        # Dropped across two screens: it goes to the one holding its middle, pulled fully inside it,
+        # and that is the spot saved
+        try { Set-Area @(Get-ScreenAreas) ($win.Left + $win.ActualWidth / 2) ($win.Top + $win.ActualHeight / 2) } catch { Write-Log $_ }
         $script:anchorRight = $win.Left + $win.ActualWidth
         $script:anchorBottom = $win.Top + $win.ActualHeight
-        $script:savedAnchor = @{ right = $script:anchorRight; bottom = $script:anchorBottom }
+        $script:anchorTop = $win.Top
+        Update-Position
+        $script:anchorRight = $win.Left + $win.ActualWidth
+        $script:anchorTop = $win.Top
+        $script:anchorBottom = $win.Top + $win.ActualHeight
+        $script:savedAnchor = @{ right = $script:anchorRight; bottom = $script:anchorBottom; top = $script:anchorTop }
         try { [IO.File]::WriteAllText($StatePath, ($script:savedAnchor | ConvertTo-Json -Compress), $Utf8) } catch {}
     })
 
@@ -229,7 +266,9 @@ try {
     $script:doneCache = @{}    # done-*.json already read
     $script:seen = @{}         # requests/notices that already played their sound
     $script:current = $null    # request/question on screen
-    $script:currentDone = $null
+    $script:currentDone = $null    # the top "finished" notice (double click goes to its session)
+    $script:doneItems = [ordered]@{} # notice key -> @{ notice; root; ui } of each box on screen
+    $script:cardClear = $false
     $script:shownAt = 0
     $script:qState = New-Object System.Collections.ArrayList   # state of the questions on screen
     $script:typing = $false    # focus allowed to type an "Other answer"
@@ -275,65 +314,9 @@ try {
         $script:colorMap = $new
     }
 
-    # Textures of the Minecraft theme (frame of dirt, strip of grass, XP orbs), only once downloaded.
-    # Any other theme (or no download yet) gets the usual frame and dots back.
-    $script:mcExtras = $false
-    function Get-McImage([string]$file) {
-        $bi = New-Object System.Windows.Media.Imaging.BitmapImage
-        $bi.BeginInit()
-        $bi.CacheOption = [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad
-        $bi.UriSource = [Uri](Get-MinecraftFile $Data 'textures' $file)
-        $bi.EndInit()
-        $bi.Freeze()
-        return $bi
-    }
-    function New-McBrush($image, [bool]$tile, [bool]$core = $false) {
-        $b = New-Object System.Windows.Media.ImageBrush $image
-        # The orb fills only the middle 8x8 of its 16x16 picture: show just that part
-        if ($core) { $b.Viewbox = New-Object System.Windows.Rect 0.25, 0.25, 0.5, 0.5 }
-        if ($tile) {
-            $b.TileMode = [System.Windows.Media.TileMode]::Tile
-            $b.ViewportUnits = [System.Windows.Media.BrushMappingMode]::Absolute
-            $b.Viewport = New-Object System.Windows.Rect 0, 0, 32, 32
-        }
-        [System.Windows.Media.RenderOptions]::SetBitmapScalingMode($b, [System.Windows.Media.BitmapScalingMode]::NearestNeighbor)
-        $b.Freeze()
-        return $b
-    }
-    function Set-ThemeExtras([string]$name) {
-        if ($name -eq 'minecraft' -and (Get-MinecraftState $Data) -eq 'ready') {
-            try {
-                $orb = New-McBrush (Get-McImage 'orb.png') $false $true
-                $dirt = New-McBrush (Get-McImage 'dirt.png') $true
-                $grass = New-McBrush (Get-McImage 'grass.png') $true
-                $ui.Card.BorderBrush = $dirt
-                $ui.Card.BorderThickness = New-Object System.Windows.Thickness 6
-                $ui.Card.CornerRadius = New-Object System.Windows.CornerRadius 0
-                $ui.GrassTop.Background = $grass
-                $ui.GrassTop.Visibility = 'Visible'
-                foreach ($d in 'IdleDot', 'ReqDot', 'QDot') { $ui[$d].Fill = $orb; $ui[$d].Width = 14; $ui[$d].Height = 14 }
-                $script:mcExtras = $true
-                return
-            } catch { Write-Log $_ }
-        }
-        # Back to the plain look (also the palette-only Minecraft look: square corners)
-        $ui.Card.BorderBrush = Get-Brush '#34343B'
-        $ui.Card.BorderThickness = New-Object System.Windows.Thickness 1
-        $ui.Card.CornerRadius = New-Object System.Windows.CornerRadius $(if ($name -eq 'minecraft') { 0 } else { 14 })
-        $ui.GrassTop.Visibility = 'Collapsed'
-        $ui.IdleDot.Fill = Get-Brush '#5FB98A'
-        $ui.ReqDot.Fill = Get-Brush '#D97757'
-        $ui.QDot.Fill = Get-Brush '#7AA2F7'
-        $ui.IdleDot.Width = 8
-        $ui.IdleDot.Height = 8
-        foreach ($d in 'ReqDot', 'QDot') { $ui[$d].Width = 10; $ui[$d].Height = 10 }
-        $script:mcExtras = $false
-    }
-    # Every way of changing the theme goes through here: colors, then textures, then sounds
+    # Every way of changing the theme goes through here
     function Set-LookTheme([string]$name) {
         Set-Theme $name
-        Set-ThemeExtras $name
-        Set-SoundSet $name
     }
 
     # --- Focus: only while typing a free-text answer ---
@@ -372,6 +355,13 @@ try {
             if ($ui[$p].Visibility -ne $v) { $ui[$p].Visibility = $v }
         }
         if ($name -ne 'IdlePanel') { $script:sessionsOpen = $false; $ui.SessionsList.Visibility = 'Collapsed' }
+        # The stacked "finished" boxes are cards of their own: the Card around them goes see-through
+        $clear = $name -eq 'DonePanel'
+        if ($clear -ne $script:cardClear) {
+            $script:cardClear = $clear
+            $ui.Card.Background = $(if ($clear) { [System.Windows.Media.Brushes]::Transparent } else { Get-Brush '#1E1E22' })
+            $ui.Card.BorderThickness = New-Object System.Windows.Thickness $(if ($clear) { 0 } else { 1 })
+        }
     }
 
     function Invoke-Attention([string]$key, [scriptblock]$sound) {
@@ -805,35 +795,120 @@ try {
         }
     }
 
-    function Show-Done($d, [int]$total) {
+    # ---------------- "Finished" notices: one box each, newest on top ----------------
+    # Past this many boxes the last one shows "+N more" (the card grows up from its corner)
+    $DoneMaxShown = 4
+
+    # A box for one notice, from the DoneItem template, in the current theme's colors
+    function New-DoneItem($d) {
+        $root = [Windows.Markup.XamlReader]::Parse($DoneItemXaml)
+        $it = @{ notice = $d; root = $root; ui = @{} }
+        foreach ($n in 'DoneTitle', 'DoneAgo', 'DoneTimer', 'DoneProjectChip', 'DoneProject', 'DoneMoreChip', 'DoneMoreText',
+            'DoneMsg', 'BtnGoVs', 'BtnDismiss', 'BtnDoneClose') {
+            $it.ui[$n] = $root.FindName($n)
+        }
+        foreach ($n in 'BtnGoVs', 'BtnDismiss', 'BtnDoneClose') { $it.ui[$n].Style = $win.Resources['Btn'] }
+        foreach ($n in 'DoneProjectChip', 'DoneMoreChip') { $it.ui[$n].Style = $win.Resources['Chip'] }
+        Convert-ElementColors $root @{} $script:colorMap
+        $it.ui.DoneTitle.Text = $Sep + $(if ($d.question) { $S.doneQuestionTitle } else { $S.doneTitle })
+        Set-ProjectChip $it.ui.DoneProjectChip $it.ui.DoneProject $d
+        $it.ui.DoneMsg.Text = [string]$d.message
+        $it.ui.BtnGoVs.Content = switch ([string]$d.kind) {
+            'terminal' { $S.goToTerminal }
+            'other' { $S.goToWindow }
+            default { $S.goToVsCode }
+        }
+        $it.ui.BtnDismiss.Content = $S.ok
+        # Each button knows its notice by key
+        foreach ($b in 'BtnGoVs', 'BtnDismiss', 'BtnDoneClose') { $it.ui[$b].Tag = [string]$d.key }
+        $it.ui.BtnDismiss.Add_Click({ param($src, $e) Close-DoneNotice ([string]$src.Tag) })
+        $it.ui.BtnDoneClose.Add_Click({ param($src, $e) Close-DoneNotice ([string]$src.Tag) })
+        $it.ui.BtnGoVs.Add_Click({ param($src, $e) Close-DoneNotice ([string]$src.Tag) -GoToSession })
+        return $it
+    }
+
+    # Every tick: how long ago, the countdown ring, and "+N more" on the last box
+    function Update-DoneItem($it, [int]$hidden) {
+        $d = $it.notice
+        $mins = [int][math]::Floor(((Get-NowMs) - [int64]$d.created) / 60000)
+        if ($mins -lt 1) { $it.ui.DoneAgo.Text = $S.now }
+        elseif ($mins -lt 60) { $it.ui.DoneAgo.Text = $S.minutesAgo -f $mins }
+        else { $it.ui.DoneAgo.Text = $S.hoursAgo -f [math]::Floor($mins / 60) }
+        # Countdown ring: one dash as long as the time left, in units of the stroke thickness
+        # (0.0, not 0: with an int first argument PowerShell picks Max(int, int) and rounds the fraction)
+        $left = [math]::Max(0.0, 1 - ((Get-NowMs) - [int64]$d.created) / $DoneMaxAgeMs)
+        $ring = $it.ui.DoneTimer
+        $len = [math]::PI * ($ring.Width - $ring.StrokeThickness) / $ring.StrokeThickness
+        $ring.StrokeDashArray = [System.Windows.Media.DoubleCollection]::new([double[]]@(($left * $len), $len))
+        if ($hidden -gt 0) {
+            $it.ui.DoneMoreText.Text = if ($hidden -eq 1) { $S.moreOne } else { $S.moreMany -f $hidden }
+            $it.ui.DoneMoreChip.Visibility = 'Visible'
+        }
+        else { $it.ui.DoneMoreChip.Visibility = 'Collapsed' }
+    }
+
+    # Boxes slide: a new one unfolds (pushing the ones below down), a closed one folds away (the ones
+    # below move up). Height, gap and opacity go together, in $DoneMotionMs.
+    $DoneMotionMs = 220
+    $script:doneLeaving = New-Object System.Collections.ArrayList   # @{ root; until }: folding away
+    function Start-DoneMotion($root, [bool]$In) {
+        if ($RenderMode) { return }   # screenshots: boxes at rest
+        $from = if ($In) { 0.0 } else { 1.0 }
+        $dur = [System.Windows.Duration]::new([TimeSpan]::FromMilliseconds($DoneMotionMs))
+        $ease = New-Object System.Windows.Media.Animation.CubicEase
+        $ease.EasingMode = 'EaseOut'
+        $scale = New-Object System.Windows.Media.ScaleTransform 1.0, $from
+        $root.LayoutTransform = $scale
+        $a = [System.Windows.Media.Animation.DoubleAnimation]::new($from, 1.0 - $from, $dur)
+        $a.EasingFunction = $ease
+        $scale.BeginAnimation([System.Windows.Media.ScaleTransform]::ScaleYProperty, $a)
+        $root.BeginAnimation([System.Windows.UIElement]::OpacityProperty, [System.Windows.Media.Animation.DoubleAnimation]::new($from, 1.0 - $from, $dur))
+        $gap = [System.Windows.Media.Animation.ThicknessAnimation]::new(
+            [System.Windows.Thickness]::new(0, 0, 0, 8 * $from), [System.Windows.Thickness]::new(0, 0, 0, 8 * (1.0 - $from)), $dur)
+        $gap.EasingFunction = $ease
+        $root.BeginAnimation([System.Windows.FrameworkElement]::MarginProperty, $gap)
+    }
+
+    # $list: the notices, newest first. Keeps one box per notice: new ones are built in place (and ring
+    # once), gone ones fold away; the boxes in between are never rebuilt.
+    function Show-DoneStack($list) {
         $script:current = $null
-        if (-not $script:currentDone -or $script:currentDone.key -ne $d.key) {
-            $script:currentDone = $d
+        # Boxes done folding away leave the panel
+        foreach ($l in @($script:doneLeaving)) {
+            if ((Get-NowMs) -ge $l.until) { $ui.DonePanel.Children.Remove($l.root); $script:doneLeaving.Remove($l) }
+        }
+        $shown = @($list | Select-Object -First $DoneMaxShown)
+        $keys = @($shown | ForEach-Object { [string]$_.key })
+        foreach ($k in @($script:doneItems.Keys)) {
+            if ($keys -contains $k) { continue }
+            $root = $script:doneItems[$k].root
+            $script:doneItems.Remove($k)
+            Start-DoneMotion $root $false
+            [void]$script:doneLeaving.Add(@{ root = $root; until = (Get-NowMs) + $DoneMotionMs + 50 })
+        }
+        # Oldest first, so that each new box goes right above the next older one already in place
+        for ($i = $shown.Count - 1; $i -ge 0; $i--) {
+            $d = $shown[$i]
+            $k = [string]$d.key
+            if ($script:doneItems.Contains($k)) { continue }
+            $it = New-DoneItem $d
+            $script:doneItems[$k] = $it
+            $at = $ui.DonePanel.Children.Count
+            if ($i -lt $keys.Count - 1) { $at = $ui.DonePanel.Children.IndexOf($script:doneItems[$keys[$i + 1]].root) }
+            $ui.DonePanel.Children.Insert($at, $it.root)
+            Start-DoneMotion $it.root $true
             $script:shownAt = Get-NowMs
-            Set-ProjectChip $ui.DoneProjectChip $ui.DoneProject $d
-            $ui.DoneMsg.Text = [string]$d.message
-            $ui.BtnGoVs.Content = switch ([string]$d.kind) {
-                'terminal' { $S.goToTerminal }
-                'other' { $S.goToWindow }
-                default { $S.goToVsCode }
-            }
-            Set-Panel 'DonePanel'
             $allDone = [bool]$d.allDone
-            Invoke-Attention $d.key {
+            Invoke-Attention $k {
                 if ($allDone) { Play-Sound 'allDone' { [System.Media.SystemSounds]::Exclamation.Play() } }
                 else { Play-Sound 'done' { [System.Media.SystemSounds]::Beep.Play() } }
             }
         }
-        if ($total -gt 1) {
-            $more = $total - 1
-            $ui.DoneMoreText.Text = if ($more -eq 1) { $S.moreOne } else { $S.moreMany -f $more }
-            $ui.DoneMoreChip.Visibility = 'Visible'
+        Set-Panel 'DonePanel'
+        $script:currentDone = $shown[0]
+        for ($i = 0; $i -lt $keys.Count; $i++) {
+            Update-DoneItem $script:doneItems[$keys[$i]] $(if ($i -eq $keys.Count - 1) { $list.Count - $shown.Count } else { 0 })
         }
-        else { $ui.DoneMoreChip.Visibility = 'Collapsed' }
-        $mins = [int][math]::Floor(((Get-NowMs) - [int64]$d.created) / 60000)
-        if ($mins -lt 1) { $ui.DoneAgo.Text = $S.now }
-        elseif ($mins -lt 60) { $ui.DoneAgo.Text = $S.minutesAgo -f $mins }
-        else { $ui.DoneAgo.Text = $S.hoursAgo -f [math]::Floor($mins / 60) }
     }
 
     function Update-View {
@@ -841,7 +916,8 @@ try {
         $p = @(Get-Pending)
         if ($p.Count -gt 0) { Show-Request $p[0] $p.Count; return }
         $d = @(Get-Done)
-        if ($d.Count -gt 0) { Show-Done $d[0] $d.Count; return }
+        # (also with no notice left while the last boxes fold away)
+        if ($d.Count -gt 0 -or $script:doneItems.Count -gt 0 -or $script:doneLeaving.Count -gt 0) { Show-DoneStack $d; return }
         Show-Idle
     }
 
@@ -890,8 +966,11 @@ try {
         if ($h -ne [IntPtr]::Zero) { [void][ClaudeWidget.WinFocus]::FocusHandle($h.ToInt64()) }
     }
 
-    function Close-DoneNotice([switch]$GoToSession) {
-        $d = $script:currentDone
+    # Closes the notice with that key (its box's buttons), or the top one (double click)
+    function Close-DoneNotice([string]$Key = '', [switch]$GoToSession) {
+        # (a key no longer in the stack: a box that is already folding away)
+        if ($Key -and -not $script:doneItems.Contains($Key)) { return }
+        $d = if ($Key) { $script:doneItems[$Key].notice } else { $script:currentDone }
         if (-not $d -or (Test-ClickTooSoon)) { return }
         Remove-Item -LiteralPath $d.file -Force -ErrorAction SilentlyContinue
         $script:currentDone = $null
@@ -913,8 +992,6 @@ try {
     $ui.BtnVs.Add_Click({ Send-Response 'vscode' })
     $ui.BtnAnswer.Add_Click({ Submit-Answers })
     $ui.BtnQVs.Add_Click({ Send-Response 'vscode' })
-    $ui.BtnDismiss.Add_Click({ Close-DoneNotice })
-    $ui.BtnGoVs.Add_Click({ Close-DoneNotice -GoToSession })
 
     # Hands pending requests back to VS Code and exits (right-click > Close, and the tray menu)
     function Close-Widget {
@@ -956,46 +1033,7 @@ try {
     function Sync-MenuChecks {
         foreach ($e in $script:prefItems) { $e.item.IsChecked = ($script:prefs[$e.key] -eq $e.value) }
     }
-    # The Minecraft theme is downloaded once, by mojang.ps1 in the background, after the first click
-    $script:mcWaiting = $false
-    $script:mcStarted = 0
-    function Start-MinecraftDownload {
-        try {
-            $script = Join-Path $PSScriptRoot 'mojang.ps1'
-            [void](Start-Process powershell.exe -WindowStyle Hidden -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"{0}"' -f $script), '-Dir', ('"{0}"' -f $Data))
-            $script:mcWaiting = $true
-            $script:mcStarted = Get-NowMs
-        } catch { Write-Log $_ }
-    }
-    # The menu item says what clicking it does: download, wait, or just use the theme
-    function Sync-MinecraftItem([string]$state) {
-        $e = @($script:prefItems | Where-Object { $_.key -eq 'theme' -and $_.value -eq 'minecraft' })[0]
-        if (-not $e) { return }
-        $e.item.Header = switch ($state) {
-            'ready' { $S.themeMinecraft }
-            'downloading' { $S.themeMinecraftBusy }
-            default { $(if ($script:mcWaiting) { $S.themeMinecraftBusy } else { $S.themeMinecraftDownload }) }
-        }
-    }
-    # Called every ~2 s: follows a download that this widget started
-    function Sync-Minecraft {
-        $state = Get-MinecraftState $Data
-        Sync-MinecraftItem $state
-        if (-not $script:mcWaiting) { return }
-        if ($state -eq 'ready') { $script:mcWaiting = $false; Set-Pref 'theme' 'minecraft'; Sync-MinecraftItem 'ready' }
-        elseif ($state -eq 'failed' -or ($state -eq 'none' -and ((Get-NowMs) - $script:mcStarted) -gt 30000)) {
-            $script:mcWaiting = $false
-            Write-Log ('minecraft theme: download failed: ' + (Get-MinecraftMessage $Data))
-            Sync-MinecraftItem $state
-        }
-    }
     function Set-Pref([string]$key, $value) {
-        # Minecraft needs its files first: the click starts the download and changes nothing yet
-        if ($key -eq 'theme' -and $value -eq 'minecraft' -and (Get-MinecraftState $Data) -ne 'ready') {
-            if (-not $script:mcWaiting -and (Get-MinecraftState $Data) -ne 'downloading') { Start-MinecraftDownload }
-            Sync-MinecraftItem (Get-MinecraftState $Data)
-            return
-        }
         $script:prefs[$key] = $value
         switch ($key) {
             'theme' { Set-LookTheme (Resolve-Theme $script:prefs.theme (Get-WindowsLightTheme)) }
@@ -1023,8 +1061,7 @@ try {
     Add-ChoiceMenu $menu $S.menuTheme @(
         @{ label = $S.themeDark; key = 'theme'; value = 'dark' }
         @{ label = $S.themeLight; key = 'theme'; value = 'light' }
-        @{ label = $S.themeAuto; key = 'theme'; value = 'auto' }
-        @{ label = $S.themeMinecraftDownload; key = 'theme'; value = 'minecraft' })
+        @{ label = $S.themeAuto; key = 'theme'; value = 'auto' })
     Add-ChoiceMenu $menu $S.menuOpacity @(foreach ($o in 1.0, 0.9, 0.8, 0.7, 0.6) { @{ label = ('{0}%' -f [int]($o * 100)); key = 'opacity'; value = [double]$o } })
     Add-ChoiceMenu $menu $S.menuVolume @(foreach ($v in 0, 25, 50, 75, 100) { @{ label = $(if ($v -eq 0) { $S.volumeMute } else { '{0}%' -f $v }); key = 'volume'; value = [int]$v } })
     Add-ChoiceMenu $menu $S.menuScale @(foreach ($z in 1.0, 1.25, 1.5) { @{ label = ('{0}%' -f [int]($z * 100)); key = 'scale'; value = [double]$z } })
@@ -1040,7 +1077,6 @@ try {
     [void]$menu.Items.Add($closeItem)
     $ui.Card.ContextMenu = $menu
     Sync-MenuChecks
-    Sync-MinecraftItem (Get-MinecraftState $Data)
     # The README screenshots are always drawn at normal opacity and size
     if (-not $RenderMode) {
         Set-Opacity
@@ -1241,7 +1277,7 @@ try {
         $d = $sample.done
         $d | Add-Member -NotePropertyName key -NotePropertyValue 'sample-done' -Force
         $d | Add-Member -NotePropertyName created -NotePropertyValue ($now - 2 * 60000) -Force
-        Show-Done $d 1
+        Show-DoneStack @($d)
         Save-Png $frame (Join-Path $OutDir 'done.png')
     }
 
@@ -1269,7 +1305,6 @@ try {
                     Write-Log ('screens changed: anchor {0},{1} ({2})' -f [int]$a.right, [int]$a.bottom, $(if ($a.saved) { 'saved' } else { 'default' }))
                 }
             } catch { Write-Log $_ }
-            try { Sync-Minecraft } catch { Write-Log $_ }
         }
     })
     $win.Add_Closed({

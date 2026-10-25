@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.6.0 (2026-10-25)
+
+- **"Finished" notices stack.** One box per notice, newest on top (up to 4; the last one counts the rest), each with its own **✕**, **OK** and "go to" button. New boxes unfold and closed ones fold away, so the boxes below slide instead of jumping.
+- **Notices close by themselves after 5 minutes** (was 12 hours), with a ring next to the ✕ that empties until then.
+- **Notices also show with the Claude desktop app.** Its single window holds every session, so being in front no longer hides a session's notice.
+- **"Question for you".** When a turn ends with a question in the Claude desktop app's "next step" box, the notice shows that question instead of the start of the reply (read from the end of the transcript, which takes a few tens of milliseconds even on long sessions).
+- **The widget keeps its top edge.** Cards and notices grow downwards from where you put it (upwards only when they would not fit), and it always stays inside one monitor. Dragging works across monitors; the saved spot (`state.json`) now also has `top`.
+- **Spanish.** `CLAUDE_WIDGET_LANG=es`, or a Windows display language in Spanish.
+- **Minecraft theme removed**, and with it the only network use (the Mojang download). A `prefs.json` that says `minecraft` falls back to the dark theme.
+
 ## 2.5.4 (2026-10-13)
 
 - Internal: `widget.ps1` is 400 lines shorter. The window layout moved to `widget.xaml` and the Win32 helper code to `widget-native.cs`, both loaded by `widget.ps1` at start. No change in behavior.

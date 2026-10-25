@@ -6,7 +6,7 @@ An always-on-top desktop widget for [Claude Code](https://code.claude.com) on Wi
 
 - **Permission requests**: see the tool, the command or file and the project, then click **Approve**, **Deny** or **Decide in VS Code**.
 - **Claude's questions** (the multiple-choice ones): pick one or more options, or type your own answer.
-- **"Finished" notices**: when Claude finishes a reply, the widget shows the project and the start of the reply, plus a button that takes you back to that session's window: VS Code or the terminal.
+- **"Finished" notices**: when Claude finishes a reply, the widget shows the project and the start of the reply, plus a button that takes you back to that session's window: VS Code, the terminal or the Claude desktop app. Notices from several sessions stack, one box each, and each closes by itself after 5 minutes.
 
 When there is nothing to show, it shrinks to a small pill that you can drag anywhere:
 
@@ -85,14 +85,14 @@ The widget starts in the default corner again, because the new name comes with a
 | --- | --- |
 | Orange pulsing dot, **permission request** | **Approve** runs the action. **Deny** blocks it and tells Claude you denied it. **Decide in VS Code** shows the normal prompt in VS Code. For an **Edit** or **Write** the card shows the diff. **Always allow...** approves and saves the rule shown on the button (this session, this project or all projects); it only offers rules Claude Code itself suggested. |
 | Blue pulsing dot, **question** | Pick an option (or several, when the question allows it), then **Answer**. **Other answer** lets you type; Enter also sends it. **Answer in VS Code** hands the question back to VS Code. |
-| Green check, **finished** | **Go to VS Code** or **Go to terminal** brings that session's window to the front. **OK** dismisses the notice. |
+| Green check, **finished** | **Go to VS Code**, **Go to terminal** or **Go to window** brings that session's window to the front. **OK** or **✕** dismisses the notice; the ring next to the ✕ empties during the 5 minutes before it closes by itself. One box per notice, newest on top (up to 4; the last one counts the rest). When the turn ended with a question in the Claude desktop app's "next step" box, the box says **question for you** and shows it (answer it in the app). |
 | Idle pill, **N working** | Click it to list the working sessions (project, title, time). Click again to close the list. |
 
-- **Drag** the widget anywhere. It remembers the position.
+- **Drag** the widget anywhere, on any monitor. It remembers the position by its top edge: cards and notices grow downwards from there (upwards only when they would not fit), and the widget always stays inside one monitor.
 - **Double-click** the widget (outside its buttons) to bring back the session's window: on a "finished" notice, that session; otherwise, the session you typed in last.
 - **Right-click** opens the menu: **Theme**, **Opacity**, **Volume**, **Size**, **Minimal pill** (see [Look and sound](#look-and-sound)) and **Close widget**. Close hands pending requests back to VS Code, and the widget opens again with the next session or request (while "do not disturb" is on it stays hidden).
 - **Tray icon.** Left-click toggles **do not disturb**; right-click for the menu. In the mode, requests and questions go straight to VS Code, the widget is hidden and "finished" notices wait until you turn it off. It stays on until you turn it off, even after a restart. Windows may hide new tray icons: drag it onto the taskbar once.
-- With several requests or sessions, a chip shows how many are waiting (`+1 queued`), and they come one at a time.
+- With several requests, a chip shows how many are waiting (`+1 queued`), and they come one at a time, before any "finished" notice.
 - The project chip also shows the session's title (the name from `/rename`, or Claude Code's automatic one). When several sessions were working and the last one finishes, its notice plays a different sound.
 
 ## Behavior worth knowing
@@ -101,7 +101,7 @@ The widget starts in the default corner again, because the new name comes with a
 - **5-minute limit.** If nobody answers, the card closes and the request goes to VS Code as usual.
 - **Away from the computer.** With no mouse or keyboard input for 2 minutes, requests and questions skip the widget and go straight to VS Code. This also applies to a card already on screen. If you use [Remote Control](https://code.claude.com/docs/en/remote-control), that is how they reach your phone or browser without delay.
 - **Monitor changes.** If the widget's monitor goes away (say, you undock the laptop), the widget moves to the main screen's bottom-right corner within a couple of seconds. When that monitor is back, it returns to where you put it.
-- **No "finished" notice while you watch.** When you send a message, the widget remembers the window you typed in, VS Code or a terminal. If that window is in front when Claude finishes, no notice is shown. In Windows Terminal this works per window, not per tab. The notice also disappears when you send a new message in that session, and after 12 hours.
+- **No "finished" notice while you watch.** When you send a message, the widget remembers the window you typed in, VS Code or a terminal. If that window is in front when Claude finishes, no notice is shown. In Windows Terminal this works per window, not per tab. The Claude desktop app is the exception: one window holds all its sessions, so its notices always show. The notice also disappears when you send a new message in that session, and after 5 minutes.
 - **Plan approval stays in VS Code.** Approving a plan (`ExitPlanMode`) is never routed to the widget.
 - **What it can't do:** send new prompts. Claude Code has no supported way to inject messages into a running VS Code session. For that, use Remote Control.
 
@@ -111,7 +111,7 @@ Set these environment variables in the `env` block of `~/.claude/settings.json`:
 
 | Variable | Default | What it does |
 | --- | --- | --- |
-| `CLAUDE_WIDGET_LANG` | Windows display language | `pt` or `en`. Any other value falls back to English. |
+| `CLAUDE_WIDGET_LANG` | Windows display language | `pt`, `es` or `en`. Any other value falls back to English. |
 | `CLAUDE_WIDGET_AWAY_SECS` | `120` | Seconds without mouse or keyboard input before requests skip the widget. |
 | `CLAUDE_WIDGET_HOTKEYS` | off | `1` turns on the global hotkeys. While on, those key combinations stop working in other programs, and Approve/Deny act on the permission card on screen without you looking at it. |
 | `CLAUDE_WIDGET_KEY_APPROVE` | `Ctrl+Alt+Y` | Hotkey that approves the permission card on screen. |
@@ -132,11 +132,11 @@ The hotkey variables are read when the widget starts, so restart it after changi
 
 Right-click the widget to change how it looks and sounds. Each choice applies right away and is saved in `prefs.json` in the plugin data folder.
 
-You can also edit it by hand (restart the widget afterwards): `{"theme":"dark","opacity":1,"volume":100,"scale":1,"minimal":false}`. `theme` is `dark`, `light`, `auto` or `minecraft`; `opacity` goes from 0.5 to 1; `volume` from 0 to 100; `scale` is 1, 1.25 or 1.5; `minimal` is true or false. A missing or invalid value falls back to the default.
+You can also edit it by hand (restart the widget afterwards): `{"theme":"dark","opacity":1,"volume":100,"scale":1,"minimal":false}`. `theme` is `dark`, `light` or `auto`; `opacity` goes from 0.5 to 1; `volume` from 0 to 100; `scale` is 1, 1.25 or 1.5; `minimal` is true or false. A missing or invalid value falls back to the default.
 
 | Menu | Choices |
 | --- | --- |
-| Theme | Dark (default), Light, or Automatic (follows the Windows app theme when the widget opens), or Minecraft (see below) |
+| Theme | Dark (default), Light, or Automatic (follows the Windows app theme when the widget opens) |
 | Opacity | 100, 90, 80, 70 or 60% |
 | Volume | Mute, 25, 50, 75 or 100% (default) |
 | Size | 100% (default), 125% or 150% |
@@ -146,11 +146,7 @@ You can also edit it by hand (restart the widget afterwards): `{"theme":"dark","
 
 The volume applies to the widget's three sounds (request, finished, all done). If Windows cannot play a sound file, the widget falls back to the system sound, which ignores the volume setting (Mute still silences it).
 
-### Minecraft theme (downloads from Mojang)
-
-The **Minecraft** item in the Theme menu is the only part of the widget that uses the internet, and only once, when you click it. The widget downloads about 4 MB of textures and sounds from Mojang's servers (the same ones the game launcher uses: `piston-meta.mojang.com`, `piston-data.mojang.com` and `resources.download.minecraft.net`) into the plugin data folder (`minecraft\`). The theme switches on when the download ends; if it fails, you keep your current theme and the reason goes to `widget.log`. With the theme on, the cards get square corners, a dirt frame with a strip of grass on top and XP orbs for the status dots, and the sounds change (request: XP orb, finished: item pop, all done: level up). If Windows cannot play `.ogg` files (some Windows N editions), the system sounds stay.
-
-No file from Mojang is part of this repository, and there is no screenshot of this theme for the same reason. Minecraft is a trademark of Mojang Studios and Microsoft; this project is not affiliated with them. To remove the files, delete the `minecraft` folder in the plugin data folder.
+The Minecraft theme of 2.5.x was removed in 2.6.0, so the widget no longer downloads anything. A `prefs.json` that still says `minecraft` falls back to the dark theme, and you can delete the leftover `minecraft` folder in the plugin data folder.
 
 ## How it works
 
@@ -168,7 +164,7 @@ Claude Code ──hook──▶ hook.ps1 ──queue\req-<id>.json──▶ widg
 
 - Approving in the widget is the same as clicking **Allow** in VS Code. The widget shows the full command or file path before you decide.
 - **Always allow** saves a permanent rule: the button shows the rule and where it goes, and the widget only saves rules Claude Code itself suggested for that request (never rules that remove yours, nor "bypass permissions").
-- Everything stays on your machine. There is no telemetry, and the only network use is the optional Minecraft theme's one-time download from Mojang's servers (see above). The only data are files in the plugin data folder, inside your user profile.
+- Everything stays on your machine. There is no telemetry and no network use. The only data are files in the plugin data folder, inside your user profile.
 - Requests and answers are plain files that only your Windows user can write. A program running as you could write an answer file, but such a program could already do anything you can.
 - Plan approvals and anything you don't answer always fall back to Claude Code's own prompt.
 

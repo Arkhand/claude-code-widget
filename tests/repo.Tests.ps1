@@ -135,11 +135,11 @@ Describe 'repository rules' {
         $files | Where-Object { $_ -match '\.(ogg|wav)$' } | Should -BeNullOrEmpty
         $files | Where-Object { $_ -match '\.png$' -and $_ -match '(?i)minecraft|dirt|grass|orb|creeper' } | Should -BeNullOrEmpty
     }
-    It '<name> says the Minecraft theme downloads from Mojang, and that it is the only network use' -ForEach $readmes {
-        $text = [IO.File]::ReadAllText($path, [Text.Encoding]::UTF8)
-        $text | Should -Match 'piston-meta\.mojang\.com'
-        $text | Should -Match 'resources\.download\.minecraft\.net'
-        $text | Should -Not -Match '(?i)no network calls and no telemetry\.'
+    # Since 2.6.0 (Minecraft theme gone) the widget never uses the network: keep it that way
+    It 'the plugin scripts make no network calls' {
+        $dir = Join-Path $repo 'plugins\opaiva-code-widget\scripts'
+        $hits = Get-ChildItem -LiteralPath $dir -File | Select-String -Pattern 'HttpWebRequest|WebClient|HttpClient|Invoke-WebRequest|Invoke-RestMethod|Net\.Sockets'
+        $hits | Should -BeNullOrEmpty
     }
     It 'widget.ps1 has no handler parameter named like the strings table ($S)' {
         $text = [IO.File]::ReadAllText((Join-Path $repo 'plugins\opaiva-code-widget\scripts\widget.ps1'))

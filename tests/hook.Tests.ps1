@@ -59,6 +59,36 @@ Describe 'Get-LastAssistantText' {
     }
 }
 
+Describe 'Get-PendingAsk' {
+    BeforeAll {
+        # Transcript lines as Claude Code writes them (compact JSON, one per line)
+        $prompt = '{"type":"user","message":{"role":"user","content":"do it"}}'
+        $result = '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}'
+        $text = '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Done."}]}}'
+        function New-WrapUp([string]$Ask) {
+            $in = if ($Ask) { @{ recap = 'r'; ask = $Ask } } else { @{ recap = 'r' } }
+            return (@{ type = 'assistant'; message = @{ role = 'assistant'; content = @(@{ type = 'tool_use'; id = 't1'; name = 'mcp__ccd_turn__wrap_up'; input = $in }) } } | ConvertTo-Json -Depth 8 -Compress)
+        }
+        function New-Transcript([string[]]$Lines) {
+            $path = Join-Path $TestDrive ('t' + [guid]::NewGuid().ToString('N') + '.jsonl')
+            [IO.File]::WriteAllText($path, (($Lines -join "`n") + "`n"), (New-Object Text.UTF8Encoding $false))
+            return $path
+        }
+    }
+    It 'returns the question of this turn''s wrap-up' {
+        Get-PendingAsk (New-Transcript @($prompt, (New-WrapUp 'Push it?'), $result, $text)) | Should -BeExactly 'Push it?'
+    }
+    It 'returns an empty string when the wrap-up has no question' {
+        Get-PendingAsk (New-Transcript @($prompt, (New-WrapUp ''), $result, $text)) | Should -BeExactly ''
+    }
+    It 'ignores a question from an earlier turn' {
+        Get-PendingAsk (New-Transcript @((New-WrapUp 'Old?'), $result, $prompt, $text)) | Should -BeExactly ''
+    }
+    It 'returns an empty string for a missing transcript' {
+        Get-PendingAsk (Join-Path $tmpData 'missing.jsonl') | Should -BeExactly ''
+    }
+}
+
 Describe 'Get-PermissionDetail' {
     It 'shows <expected> for <case>' -ForEach @(
         @{ case = 'command first'; json = '{"command":"npm test","file_path":"C:\\a.txt"}'; expected = 'npm test' }
