@@ -7,6 +7,7 @@
 - **Notices also show with the Claude desktop app.** Its single window holds every session, so being in front no longer hides a session's notice.
 - **"Question for you".** When a turn ends with a question in the Claude desktop app's "next step" box, the notice shows that question instead of the start of the reply (read from the end of the transcript, which takes a few tens of milliseconds even on long sessions).
 - **The widget keeps its top edge.** Cards and notices grow downwards from where you put it (upwards only when they would not fit), and it always stays inside one monitor. Dragging works across monitors; the saved spot (`state.json`) now also has `top`.
+- **Away after 5 minutes** without mouse or keyboard input (was 2), before requests and questions skip the widget. `CLAUDE_WIDGET_AWAY_SECS` still overrides it.
 - **Spanish.** `CLAUDE_WIDGET_LANG=es`, or a Windows display language in Spanish.
 - **Minecraft theme removed**, and with it the only network use (the Mojang download). A `prefs.json` that says `minecraft` falls back to the dark theme.
 

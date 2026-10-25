@@ -99,7 +99,7 @@ The widget starts in the default corner again, because the new name comes with a
 
 - **It never takes focus.** You keep typing wherever you were, even while you click its buttons. The only exception is **Other answer**: the widget takes focus so you can type, then gives it back.
 - **5-minute limit.** If nobody answers, the card closes and the request goes to VS Code as usual.
-- **Away from the computer.** With no mouse or keyboard input for 2 minutes, requests and questions skip the widget and go straight to VS Code. This also applies to a card already on screen. If you use [Remote Control](https://code.claude.com/docs/en/remote-control), that is how they reach your phone or browser without delay.
+- **Away from the computer.** With no mouse or keyboard input for 5 minutes, requests and questions skip the widget and go straight to VS Code. This also applies to a card already on screen. If you use [Remote Control](https://code.claude.com/docs/en/remote-control), that is how they reach your phone or browser without delay.
 - **Monitor changes.** If the widget's monitor goes away (say, you undock the laptop), the widget moves to the main screen's bottom-right corner within a couple of seconds. When that monitor is back, it returns to where you put it.
 - **No "finished" notice while you watch.** When you send a message, the widget remembers the window you typed in, VS Code or a terminal. If that window is in front when Claude finishes, no notice is shown. In Windows Terminal this works per window, not per tab. The Claude desktop app is the exception: one window holds all its sessions, so its notices always show. The notice also disappears when you send a new message in that session, and after 5 minutes.
 - **Plan approval stays in VS Code.** Approving a plan (`ExitPlanMode`) is never routed to the widget.
@@ -112,7 +112,7 @@ Set these environment variables in the `env` block of `~/.claude/settings.json`:
 | Variable | Default | What it does |
 | --- | --- | --- |
 | `CLAUDE_WIDGET_LANG` | Windows display language | `pt`, `es` or `en`. Any other value falls back to English. |
-| `CLAUDE_WIDGET_AWAY_SECS` | `120` | Seconds without mouse or keyboard input before requests skip the widget. |
+| `CLAUDE_WIDGET_AWAY_SECS` | `300` | Seconds without mouse or keyboard input before requests skip the widget. |
 | `CLAUDE_WIDGET_HOTKEYS` | off | `1` turns on the global hotkeys. While on, those key combinations stop working in other programs, and Approve/Deny act on the permission card on screen without you looking at it. |
 | `CLAUDE_WIDGET_KEY_APPROVE` | `Ctrl+Alt+Y` | Hotkey that approves the permission card on screen. |
 | `CLAUDE_WIDGET_KEY_DENY` | `Ctrl+Alt+N` | Hotkey that denies it. |

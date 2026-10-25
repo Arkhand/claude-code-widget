@@ -41,7 +41,7 @@ $TerminalHosts = @('windowsterminal.exe', 'openconsole.exe', 'conhost.exe', 'pow
 # Processes that own a VS Code window
 $VsCodeProcesses = @('code.exe', 'code - insiders.exe')
 $TimeoutSecs = 300
-$AwaySecs = 120
+$AwaySecs = 300
 if ($env:CLAUDE_WIDGET_AWAY_SECS) { $AwaySecs = [int]$env:CLAUDE_WIDGET_AWAY_SECS }
 
 $Lang = Resolve-Lang $env:CLAUDE_WIDGET_LANG

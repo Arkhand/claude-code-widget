@@ -99,7 +99,7 @@ O widget volta a abrir no canto padrão, porque o nome novo vem com uma pasta de
 
 - **Nunca tira o foco.** Você continua digitando onde estava, mesmo quando clica nos botões. A única exceção é a **Outra resposta**: o widget pega o foco para você digitar e depois devolve.
 - **Limite de 5 minutos.** Se ninguém responder, o cartão fecha e o pedido vai para o VS Code normalmente.
-- **Longe do computador.** Sem uso de mouse nem teclado por 2 minutos, pedidos e perguntas não passam pelo widget e vão direto para o VS Code. Isso vale também para um cartão que já estava na tela. Se você usa o [Remote Control](https://code.claude.com/docs/en/remote-control), é assim que eles chegam no celular ou no navegador sem atraso.
+- **Longe do computador.** Sem uso de mouse nem teclado por 5 minutos, pedidos e perguntas não passam pelo widget e vão direto para o VS Code. Isso vale também para um cartão que já estava na tela. Se você usa o [Remote Control](https://code.claude.com/docs/en/remote-control), é assim que eles chegam no celular ou no navegador sem atraso.
 - **Troca de monitor.** Se o monitor do widget some (por exemplo, quando você tira o notebook da dock), o widget vai para o canto inferior direito da tela principal em até 2 segundos. Quando o monitor volta, ele volta para onde você tinha colocado.
 - **Sem aviso de "terminou" enquanto você está olhando.** Quando você manda uma mensagem, o widget guarda a janela onde você digitou: VS Code ou terminal. Se essa janela estiver na frente quando o Claude terminar, o aviso não aparece. No Windows Terminal isso vale por janela, não por aba. O app desktop do Claude é a exceção: uma janela só reúne todas as sessões, então os avisos dele sempre aparecem. O aviso também some quando você manda uma mensagem nova naquela sessão, e depois de 5 minutos.
 - **Aprovação de plano fica no VS Code.** Aprovar um plano (`ExitPlanMode`) nunca passa pelo widget.
@@ -112,7 +112,7 @@ Defina estas variáveis de ambiente no bloco `env` do `~/.claude/settings.json`:
 | Variável | Padrão | O que faz |
 | --- | --- | --- |
 | `CLAUDE_WIDGET_LANG` | idioma do Windows | `pt`, `es` ou `en`. Qualquer outro valor usa inglês. |
-| `CLAUDE_WIDGET_AWAY_SECS` | `120` | Segundos sem uso de mouse nem teclado até os pedidos deixarem de passar pelo widget. |
+| `CLAUDE_WIDGET_AWAY_SECS` | `300` | Segundos sem uso de mouse nem teclado até os pedidos deixarem de passar pelo widget. |
 | `CLAUDE_WIDGET_HOTKEYS` | desligado | `1` liga os atalhos globais. Enquanto ligados, essas combinações deixam de funcionar nos outros programas, e Aprovar/Negar agem no cartão de permissão que estiver na tela, sem você olhar. |
 | `CLAUDE_WIDGET_KEY_APPROVE` | `Ctrl+Alt+Y` | Atalho que aprova o cartão de permissão na tela. |
 | `CLAUDE_WIDGET_KEY_DENY` | `Ctrl+Alt+N` | Atalho que nega. |
