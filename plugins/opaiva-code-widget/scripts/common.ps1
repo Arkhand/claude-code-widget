@@ -539,3 +539,180 @@ function Remove-TelegramConfig([string]$Dir) {
 function Test-TelegramReady([string]$Dir, $Prefs) {
     return [bool]($Prefs -and $Prefs.telegram -and (Test-Path -LiteralPath (Join-Path $Dir 'telegram.json')))
 }
+
+# ---------------- Telegram alerts (queue files and the decision) ----------------
+
+# The hook writes three kinds of small files in the queue folder and never touches the network:
+#   tg-<id>.json        send this now (the hook already decided: request timed out, went idle, or you are away)
+#   wait-<session>.json the session waits in VS Code: send only if it is still waiting at X and you are away
+#   seen-<session>.json the session moved on (any later hook event)
+# The widget reads them and asks Get-DueAlerts what to send.
+
+# The same cleaning hook.ps1 gives a session id before it goes into a file name
+function Get-SafeSessionId([string]$Session) { return ($Session -replace '[^A-Za-z0-9-]', '') }
+
+# Queues an alert to send now. Returns the entry id.
+function Add-AlertOutbox([string]$Queue, [hashtable]$Item) {
+    [void][IO.Directory]::CreateDirectory($Queue)
+    $id = [guid]::NewGuid().ToString('N')
+    $created = if ($Item.created) { [int64]$Item.created } else { Get-NowMs }
+    Write-JsonAtomic (Join-Path $Queue "tg-$id.json") ([ordered]@{
+        id      = $id
+        kind    = [string]$Item.kind
+        session = Get-SafeSessionId $Item.session
+        cwd     = [string]$Item.cwd
+        title   = [string]$Item.title
+        detail  = [string]$Item.detail
+        reason  = [string]$Item.reason
+        created = $created
+    })
+    return $id
+}
+
+# Marks that a session waits in VS Code. One marker per session: the newest replaces the older one.
+function Set-WaitMarker([string]$Queue, [hashtable]$Item) {
+    [void][IO.Directory]::CreateDirectory($Queue)
+    $sid = Get-SafeSessionId $Item.session
+    $created = if ($Item.created) { [int64]$Item.created } else { Get-NowMs }
+    Write-JsonAtomic (Join-Path $Queue "wait-$sid.json") ([ordered]@{
+        session = $sid
+        kind    = [string]$Item.kind
+        cwd     = [string]$Item.cwd
+        title   = [string]$Item.title
+        detail  = [string]$Item.detail
+        created = $created
+    }) -Replace
+}
+
+# The session moved on: drops its wait marker and leaves a stamp the widget uses to mark a sent alert as resolved.
+# The marker goes first so that a failed stamp can never leave a false alert pending.
+function Set-SessionSeen([string]$Queue, [string]$Session) {
+    [void][IO.Directory]::CreateDirectory($Queue)
+    $sid = Get-SafeSessionId $Session
+    Remove-Item -LiteralPath (Join-Path $Queue "wait-$sid.json") -Force -ErrorAction SilentlyContinue
+    Write-JsonAtomic (Join-Path $Queue "seen-$sid.json") ([ordered]@{ session = $sid; at = Get-NowMs }) -Replace
+}
+
+# What to send now, oldest first (callers wrap the call in @(): zero or one result is not an array).
+# Pure: the caller passes what it read from disk. $Outbox are tg-*.json entries, $Notices are Get-DoneNotices
+# results, $Waits are wait-*.json markers, $Sent is the table of Read-SentAlerts. Each result is a hashtable:
+# key (what goes into $Sent), source (req|done|wait), kind (permission|question|plan|done), session, cwd,
+# title, detail, created, reason.
+# This does not check that Telegram is connected: the caller only asks when it is.
+function Get-DueAlerts($Outbox, $Notices, $Waits, $Sent, [int64]$NowMs, [int64]$AfterMs, [bool]$Away, [bool]$Dnd) {
+    $sentKeys = if ($Sent -is [hashtable]) { $Sent } else { @{} }
+    $due = New-Object System.Collections.ArrayList
+
+    # The hook decided already: due at once, but an entry that sat unsent for a long time is stale news
+    foreach ($e in @($Outbox)) {
+        if (-not $e) { continue }
+        $created = [int64]$e.created
+        if ($created -le 0 -or ($NowMs - $created) -gt (30 * 60 * 1000)) { continue }
+        $key = "req:$($e.id)"
+        if ($sentKeys.ContainsKey($key)) { continue }
+        [void]$due.Add(@{ key = $key; source = 'req'; kind = [string]$e.kind; session = [string]$e.session; cwd = [string]$e.cwd
+                          title = [string]$e.title; detail = [string]$e.detail; created = $created; reason = [string]$e.reason })
+    }
+
+    # A finished notice still open at X. In the Claude desktop app one window hosts every session, so being in
+    # front says nothing there; with do not disturb the widget is hidden, so you did not see it either: both
+    # only count when you are away.
+    foreach ($n in @($Notices)) {
+        if (-not $n) { continue }
+        $created = [int64]$n.created
+        if ($created -le 0 -or ($NowMs - $created) -lt $AfterMs) { continue }
+        if (([bool]$n.desktopApp -or $Dnd) -and -not $Away) { continue }
+        $key = "done:$($n.key)"
+        if ($sentKeys.ContainsKey($key)) { continue }
+        [void]$due.Add(@{ key = $key; source = 'done'; kind = 'done'; session = [string]$n.session; cwd = [string]$n.cwd
+                          title = [string]$n.title; detail = [string]$n.message; created = $created; reason = '' })
+    }
+
+    # Waiting in VS Code: at X, and only if you are not at the computer
+    foreach ($w in @($Waits)) {
+        if (-not $w -or -not $Away) { continue }
+        $created = [int64]$w.created
+        if ($created -le 0 -or ($NowMs - $created) -lt $AfterMs) { continue }
+        $key = "wait:$($w.session):$created"
+        if ($sentKeys.ContainsKey($key)) { continue }
+        [void]$due.Add(@{ key = $key; source = 'wait'; kind = [string]$w.kind; session = [string]$w.session; cwd = [string]$w.cwd
+                          title = [string]$w.title; detail = [string]$w.detail; created = $created; reason = '' })
+    }
+
+    return $due | Sort-Object -Property { [int64]$_.created }
+}
+
+# Cuts to $Max characters with "..." at the end, without splitting an emoji
+function Format-CutText([string]$Text, [int]$Max) {
+    if ($Text.Length -le $Max) { return $Text }
+    $cut = $Max - 3
+    if ([char]::IsHighSurrogate($Text[$cut - 1])) { $cut-- }
+    return $Text.Substring(0, $cut) + '...'
+}
+
+# The Telegram message for one or more alerts (Get-DueAlerts results): plain text, one block per alert (header,
+# project and title, detail), blocks separated by a blank line. Telegram refuses more than 4096 characters, so
+# what does not fit is left out and counted in a last line.
+function Format-AlertText($Alerts, $S) {
+    $max = 4096
+    $headers = @{ permission = $S.tgPermission; question = $S.tgQuestion; done = $S.tgDone; plan = $S.tgPlan }
+    $blocks = @(foreach ($a in @($Alerts)) {
+        if (-not $a) { continue }
+        $lines = @()
+        $header = $headers[[string]$a.kind]
+        if ($header) { $lines += $header }
+        $session = Format-SessionLine ([string]$a.cwd) ([string]$a.title)
+        if ($session) { $lines += $session }
+        $detail = Format-CutText ([string]$a.detail).Trim() 200
+        if ($detail) { $lines += $detail }
+        $lines -join "`n"
+    })
+    $text = ''
+    $shown = 0
+    foreach ($block in $blocks) {
+        # Room for the "+N more" line that follows if this block turns out to be the last one
+        $left = $blocks.Count - $shown - 1
+        $footer = if ($left -gt 0) { "`n`n" + ($S.tgMore -f $left) } else { '' }
+        $next = if ($shown) { $text + "`n`n" + $block } else { $block }
+        if (($next + $footer).Length -gt $max) {
+            if ($shown) { break }
+            # A single block that is too big alone (a huge project name): cut it
+            $next = Format-CutText $block ($max - $footer.Length)
+        }
+        $text = $next
+        $shown++
+    }
+    $left = $blocks.Count - $shown
+    if ($left -gt 0) { $text += "`n`n" + ($S.tgMore -f $left) }
+    return $text
+}
+
+# telegram-sent.json: what was already sent, key -> @{ message; session; at; resolved }. message is the Telegram
+# message id (alerts sent in one batch share it). Entries older than a day are forgotten. Never throws.
+function Read-SentAlerts([string]$Dir) {
+    $result = @{}
+    try {
+        $path = Join-Path $Dir 'telegram-sent.json'
+        if (-not (Test-Path -LiteralPath $path)) { return $result }
+        $json = [IO.File]::ReadAllText($path, (Get-Utf8NoBom)) | ConvertFrom-Json
+        $now = Get-NowMs
+        foreach ($p in $json.PSObject.Properties) {
+            $v = $p.Value
+            if ($v -isnot [System.Management.Automation.PSCustomObject]) { continue }
+            $at = [int64]0
+            if (-not [int64]::TryParse([string]$v.at, [ref]$at)) { continue }
+            if (($now - $at) -gt (24 * 60 * 60 * 1000)) { continue }
+            $result[$p.Name] = @{ message = $v.message; session = [string]$v.session; at = $at; resolved = [bool]$v.resolved }
+        }
+    } catch { $result = @{} }
+    return $result
+}
+
+# Saves the table. $false when it cannot write (the previous file stays): the caller must not send what it
+# could not record, or a restart would send it again.
+function Save-SentAlerts([string]$Dir, [hashtable]$Sent) {
+    try {
+        Write-JsonAtomic (Join-Path $Dir 'telegram-sent.json') $Sent -Replace
+        return $true
+    } catch { return $false }
+}

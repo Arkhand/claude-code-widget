@@ -874,3 +874,371 @@ Describe 'Telegram connection storage' {
         Test-TelegramReady $script:Dir @{ telegram = $true } | Should -BeTrue
     }
 }
+
+Describe 'Telegram alert files' {
+    BeforeEach {
+        $script:Q = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+    }
+
+    It 'Add-AlertOutbox writes the tg file with the entry and returns the id' {
+        $id = Add-AlertOutbox $script:Q @{ kind = 'permission'; session = 'abc-1'; cwd = 'C:\p\app'; title = 'T'; detail = 'Bash: ls'; reason = 'timeout' }
+        $id | Should -Match '^[0-9a-f]{32}$'
+        $j = [IO.File]::ReadAllText((Join-Path $script:Q "tg-$id.json")) | ConvertFrom-Json
+        $j.id | Should -BeExactly $id
+        $j.kind | Should -BeExactly 'permission'
+        $j.session | Should -BeExactly 'abc-1'
+        $j.cwd | Should -BeExactly 'C:\p\app'
+        $j.detail | Should -BeExactly 'Bash: ls'
+        $j.reason | Should -BeExactly 'timeout'
+        [math]::Abs([int64]$j.created - (Get-NowMs)) | Should -BeLessThan 5000
+        (Join-Path $script:Q "tg-$id.json.tmp") | Should -Not -Exist
+    }
+    It 'Add-AlertOutbox keeps a created time it was given and gives each entry its own file' {
+        $a = Add-AlertOutbox $script:Q @{ kind = 'question'; session = 's'; created = 1234 }
+        $b = Add-AlertOutbox $script:Q @{ kind = 'question'; session = 's' }
+        $a | Should -Not -Be $b
+        ([IO.File]::ReadAllText((Join-Path $script:Q "tg-$a.json")) | ConvertFrom-Json).created | Should -Be 1234
+        @(Get-ChildItem -LiteralPath $script:Q -Filter 'tg-*.json').Count | Should -Be 2
+    }
+    It 'Set-WaitMarker writes the wait file and the newest one wins' {
+        Set-WaitMarker $script:Q @{ session = 's1'; kind = 'plan'; cwd = 'C:\p'; title = 'T'; detail = 'first'; created = 100 }
+        Set-WaitMarker $script:Q @{ session = 's1'; kind = 'permission'; cwd = 'C:\p'; title = 'T'; detail = 'second'; created = 200 }
+        $files = @(Get-ChildItem -LiteralPath $script:Q -Filter 'wait-*.json')
+        $files.Count | Should -Be 1
+        $files[0].Name | Should -BeExactly 'wait-s1.json'
+        $j = [IO.File]::ReadAllText($files[0].FullName) | ConvertFrom-Json
+        $j.detail | Should -BeExactly 'second'
+        $j.kind | Should -BeExactly 'permission'
+        $j.created | Should -Be 200
+    }
+    It 'Set-WaitMarker sanitizes the session for the file name and stores the clean id' {
+        Set-WaitMarker $script:Q @{ session = '..\x/y:z-1'; kind = 'plan'; created = 1 }
+        $f = @(Get-ChildItem -LiteralPath $script:Q -Filter 'wait-*.json')
+        $f.Count | Should -Be 1
+        $f[0].Name | Should -BeExactly 'wait-xyz-1.json'
+        ([IO.File]::ReadAllText($f[0].FullName) | ConvertFrom-Json).session | Should -BeExactly 'xyz-1'
+    }
+    It 'Set-SessionSeen writes the stamp' {
+        Set-SessionSeen $script:Q 's2'
+        $j = [IO.File]::ReadAllText((Join-Path $script:Q 'seen-s2.json')) | ConvertFrom-Json
+        $j.session | Should -BeExactly 's2'
+        [math]::Abs([int64]$j.at - (Get-NowMs)) | Should -BeLessThan 5000
+    }
+    It 'Set-SessionSeen overwrites an earlier stamp' {
+        Set-SessionSeen $script:Q 's2'
+        { Set-SessionSeen $script:Q 's2' } | Should -Not -Throw
+        @(Get-ChildItem -LiteralPath $script:Q -Filter 'seen-*.json').Count | Should -Be 1
+    }
+    It 'Set-SessionSeen removes the wait marker of that session only' {
+        Set-WaitMarker $script:Q @{ session = 's3'; kind = 'plan'; created = 1 }
+        Set-WaitMarker $script:Q @{ session = 's4'; kind = 'plan'; created = 1 }
+        Set-SessionSeen $script:Q 's3'
+        (Join-Path $script:Q 'wait-s3.json') | Should -Not -Exist
+        (Join-Path $script:Q 'wait-s4.json') | Should -Exist
+    }
+    It 'Set-SessionSeen works when there is no marker and no queue folder yet' {
+        { Set-SessionSeen $script:Q 'nobody' } | Should -Not -Throw
+        (Join-Path $script:Q 'seen-nobody.json') | Should -Exist
+    }
+}
+
+Describe 'Get-DueAlerts' {
+    BeforeAll {
+        $script:Now = [int64]1800000000000
+        $script:After = [int64]180000   # 3 minutes
+        function New-Notice($Created, $Desktop = $null) {
+            $n = [pscustomobject]@{ session = 'n1'; created = [int64]$Created; cwd = 'C:\p\app'; message = 'All done'; question = $false
+                title = 'T'; hwnd = 0; kind = 'done'; key = "done-n1-$Created.json"; file = "C:\q\done-n1-$Created.json" }
+            if ($null -ne $Desktop) { $n | Add-Member -NotePropertyName desktopApp -NotePropertyValue $Desktop }
+            return $n
+        }
+        function New-Entry($Id, $Created, $Reason = 'timeout', $Kind = 'permission') {
+            [pscustomobject]@{ id = $Id; kind = $Kind; session = 'r1'; cwd = 'C:\p\app'; title = 'T'; detail = 'Bash: ls'; reason = $Reason; created = [int64]$Created }
+        }
+        function New-Wait($Session, $Created, $Kind = 'plan') {
+            [pscustomobject]@{ session = $Session; kind = $Kind; cwd = 'C:\p\app'; title = 'T'; detail = 'Plan'; created = [int64]$Created }
+        }
+        function Get-Due($Outbox = @(), $Notices = @(), $Waits = @(), $Sent = @{}, $Away = $false, $Dnd = $false) {
+            ,@(Get-DueAlerts $Outbox $Notices $Waits $Sent $script:Now $script:After $Away $Dnd)
+        }
+    }
+
+    Context 'outbox entries (timeout, idle, away skip)' {
+        It 'an outbox entry is due at once, whatever the reason: <reason>' -ForEach @(
+            @{ reason = 'timeout' }, @{ reason = 'idle' }, @{ reason = 'away' }) {
+            $r = Get-Due -Outbox @(New-Entry 'a1' ($script:Now - 1000) $reason)
+            $r.Count | Should -Be 1
+            $r[0].key | Should -BeExactly 'req:a1'
+            $r[0].kind | Should -BeExactly 'permission'
+            $r[0].session | Should -BeExactly 'r1'
+            $r[0].cwd | Should -BeExactly 'C:\p\app'
+            $r[0].title | Should -BeExactly 'T'
+            $r[0].detail | Should -BeExactly 'Bash: ls'
+        }
+        It 'an outbox entry is due when you are present and without DND (the hook decided already)' {
+            (Get-Due -Outbox @(New-Entry 'a1' $script:Now) -Away $false -Dnd $false).Count | Should -Be 1
+        }
+        It 'an outbox entry is due with DND on and not away' {
+            (Get-Due -Outbox @(New-Entry 'a1' $script:Now) -Away $false -Dnd $true).Count | Should -Be 1
+        }
+        It 'a question entry keeps its kind' {
+            (Get-Due -Outbox @(New-Entry 'q1' $script:Now 'timeout' 'question'))[0].kind | Should -BeExactly 'question'
+        }
+        It 'an outbox entry older than 30 min is dropped' {
+            (Get-Due -Outbox @(New-Entry 'old' ($script:Now - 30 * 60000 - 1))).Count | Should -Be 0
+        }
+        It 'an outbox entry of exactly 30 min is still sent' {
+            (Get-Due -Outbox @(New-Entry 'edge' ($script:Now - 30 * 60000))).Count | Should -Be 1
+        }
+    }
+
+    Context 'finished notices' {
+        It 'a notice is not due before X' {
+            (Get-Due -Notices @(New-Notice ($script:Now - $script:After + 1))).Count | Should -Be 0
+        }
+        It 'a notice is due at X without needing you to be away' {
+            $r = Get-Due -Notices @(New-Notice ($script:Now - $script:After))
+            $r.Count | Should -Be 1
+            $r[0].key | Should -BeExactly 'done:done-n1-1799999820000.json'
+            $r[0].kind | Should -BeExactly 'done'
+            $r[0].session | Should -BeExactly 'n1'
+            $r[0].cwd | Should -BeExactly 'C:\p\app'
+            $r[0].title | Should -BeExactly 'T'
+            $r[0].detail | Should -BeExactly 'All done'
+        }
+        It 'a notice with no desktopApp field counts as a window session' {
+            (Get-Due -Notices @(New-Notice ($script:Now - $script:After)) -Away $false).Count | Should -Be 1
+        }
+        It 'a notice of a desktop app session is not due at X while you are present' {
+            (Get-Due -Notices @(New-Notice ($script:Now - $script:After) $true) -Away $false).Count | Should -Be 0
+        }
+        It 'a notice of a desktop app session is due at X only when away' {
+            (Get-Due -Notices @(New-Notice ($script:Now - $script:After) $true) -Away $true).Count | Should -Be 1
+        }
+        It 'a notice of a desktop app session is not due before X even when away' {
+            (Get-Due -Notices @(New-Notice ($script:Now - $script:After + 1) $true) -Away $true).Count | Should -Be 0
+        }
+        It 'a notice of a window session with desktopApp false is due while present' {
+            (Get-Due -Notices @(New-Notice ($script:Now - $script:After) $false) -Away $false).Count | Should -Be 1
+        }
+        It 'with DND a notice is not due while present' {
+            (Get-Due -Notices @(New-Notice ($script:Now - $script:After)) -Away $false -Dnd $true).Count | Should -Be 0
+        }
+        It 'with DND a notice is due only when away' {
+            (Get-Due -Notices @(New-Notice ($script:Now - $script:After)) -Away $true -Dnd $true).Count | Should -Be 1
+        }
+        It 'with DND a notice is not due before X even when away' {
+            (Get-Due -Notices @(New-Notice ($script:Now - $script:After + 1)) -Away $true -Dnd $true).Count | Should -Be 0
+        }
+        It 'a question notice carries its text as the detail' {
+            $n = New-Notice ($script:Now - $script:After)
+            $n.question = $true
+            $n.message = 'Which one?'
+            (Get-Due -Notices @($n))[0].detail | Should -BeExactly 'Which one?'
+        }
+    }
+
+    Context 'waiting in VS Code' {
+        It 'a wait marker is not due while present' {
+            (Get-Due -Waits @(New-Wait 'w1' ($script:Now - 10 * $script:After)) -Away $false).Count | Should -Be 0
+        }
+        It 'a wait marker is not due before X even when away' {
+            (Get-Due -Waits @(New-Wait 'w1' ($script:Now - $script:After + 1)) -Away $true).Count | Should -Be 0
+        }
+        It 'a wait marker of kind <kind> is due at X when away' -ForEach @(
+            @{ kind = 'plan' }, @{ kind = 'permission' }, @{ kind = 'question' }) {
+            $r = Get-Due -Waits @(New-Wait 'w1' ($script:Now - $script:After) $kind) -Away $true
+            $r.Count | Should -Be 1
+            $r[0].key | Should -BeExactly 'wait:w1:1799999820000'
+            $r[0].kind | Should -BeExactly $kind
+            $r[0].session | Should -BeExactly 'w1'
+            $r[0].detail | Should -BeExactly 'Plan'
+        }
+        It 'a wait marker is due when away, with or without DND' {
+            (Get-Due -Waits @(New-Wait 'w1' ($script:Now - $script:After)) -Away $true -Dnd $true).Count | Should -Be 1
+        }
+        It 'a newer marker of the same session has its own key' {
+            $a = (Get-Due -Waits @(New-Wait 'w1' ($script:Now - $script:After)) -Away $true)[0].key
+            $b = (Get-Due -Waits @(New-Wait 'w1' ($script:Now - $script:After - 1)) -Away $true)[0].key
+            $a | Should -Not -Be $b
+        }
+    }
+
+    Context 'nothing twice' {
+        It 'nothing already sent is returned' {
+            $sent = @{ 'req:a1' = @{ message = 5; at = $script:Now }; 'done:done-n1-1799999820000.json' = @{}; 'wait:w1:1799999820000' = @{} }
+            $r = Get-Due -Outbox @(New-Entry 'a1' $script:Now) `
+                -Notices @(New-Notice ($script:Now - $script:After)) `
+                -Waits @(New-Wait 'w1' ($script:Now - $script:After)) -Sent $sent -Away $true
+            $r.Count | Should -Be 0
+        }
+        It 'only the items not sent yet are returned' {
+            $sent = @{ 'req:a1' = @{ at = $script:Now } }
+            $r = Get-Due -Outbox @((New-Entry 'a1' $script:Now), (New-Entry 'a2' $script:Now)) -Sent $sent
+            $r.Count | Should -Be 1
+            $r[0].key | Should -BeExactly 'req:a2'
+        }
+        It 'a null Sent table is the same as an empty one' {
+            (Get-Due -Outbox @(New-Entry 'a1' $script:Now) -Sent $null).Count | Should -Be 1
+        }
+    }
+
+    Context 'mixed input' {
+        It 'returns everything due, oldest first' {
+            $r = Get-Due -Outbox @(New-Entry 'a1' ($script:Now - 500)) `
+                -Notices @(New-Notice ($script:Now - $script:After - 3000)) `
+                -Waits @(New-Wait 'w1' ($script:Now - $script:After - 1000)) -Away $true
+            $r.Count | Should -Be 3
+            (($r | ForEach-Object { $_.key.Split(':')[0] }) -join ',') | Should -BeExactly 'done,wait,req'
+        }
+        It 'empty and null inputs give nothing' {
+            @(Get-DueAlerts $null $null $null $null $script:Now $script:After $true $false).Count | Should -Be 0
+            @(Get-DueAlerts @() @() @() @{} $script:Now $script:After $true $false).Count | Should -Be 0
+        }
+    }
+}
+
+Describe 'Format-AlertText' {
+    BeforeAll {
+        $script:S = Get-Strings 'en'
+        function New-Alert($Kind = 'permission', $Detail = 'Bash: ls', $Title = 'Fix login', $Cwd = 'C:\p\app') {
+            @{ key = "req:$([guid]::NewGuid())"; kind = $Kind; session = 's'; cwd = $Cwd; title = $Title; detail = $Detail }
+        }
+    }
+
+    It 'a permission alert has the header, the session line and the detail' {
+        $t = Format-AlertText @(New-Alert) $script:S
+        $t | Should -BeExactly ($script:S.tgPermission + "`n" + (Format-SessionLine 'C:\p\app' 'Fix login') + "`n" + 'Bash: ls')
+    }
+    It 'the header follows the kind: <kind>' -ForEach @(
+        @{ kind = 'permission'; key = 'tgPermission' }, @{ kind = 'question'; key = 'tgQuestion' },
+        @{ kind = 'done'; key = 'tgDone' }, @{ kind = 'plan'; key = 'tgPlan' }) {
+        (Format-AlertText @(New-Alert $kind) $script:S).StartsWith($script:S.$key + "`n") | Should -BeTrue
+    }
+    It 'a missing detail leaves no empty line' {
+        $t = Format-AlertText @(New-Alert 'done' '') $script:S
+        $t | Should -BeExactly ($script:S.tgDone + "`n" + (Format-SessionLine 'C:\p\app' 'Fix login'))
+    }
+    It 'a missing project and title leaves out the session line' {
+        $t = Format-AlertText @(New-Alert 'done' 'x' '' '') $script:S
+        $t | Should -BeExactly ($script:S.tgDone + "`nx")
+    }
+    It 'cuts a long detail to 200 characters' {
+        $t = Format-AlertText @(New-Alert 'permission' ('d' * 500)) $script:S
+        $detail = $t.Split("`n")[2]
+        $detail.Length | Should -Be 200
+        $detail.EndsWith('...') | Should -BeTrue
+    }
+    It 'keeps a detail of exactly 200 characters whole' {
+        $d = 'd' * 200
+        (Format-AlertText @(New-Alert 'permission' $d) $script:S).Split("`n")[2] | Should -BeExactly $d
+    }
+    It 'does not split an emoji when cutting the detail' {
+        $d = ('a' * 196) + [char]::ConvertFromUtf32(0x1F600) + 'tail'
+        $detail = (Format-AlertText @(New-Alert 'permission' $d) $script:S).Split("`n")[2]
+        $detail.Length | Should -BeLessOrEqual 200
+        foreach ($i in 0..($detail.Length - 1)) {
+            if ([char]::IsHighSurrogate($detail[$i])) { [char]::IsLowSurrogate($detail[$i + 1]) | Should -BeTrue }
+        }
+    }
+    It 'separates the blocks with a blank line' {
+        $t = Format-AlertText @((New-Alert 'permission' 'one'), (New-Alert 'done' 'two')) $script:S
+        $blocks = $t -split "`n`n"
+        $blocks.Count | Should -Be 2
+        $blocks[0] | Should -Match 'one$'
+        $blocks[1] | Should -Match 'two$'
+    }
+    It 'accepts a single alert that is not wrapped in an array' {
+        { Format-AlertText (New-Alert) $script:S } | Should -Not -Throw
+    }
+    It 'is plain text: no markdown markers are added' {
+        $t = Format-AlertText @(New-Alert) $script:S
+        $t | Should -Not -Match '[*_`]'
+    }
+    It 'Format-AlertText keeps 10 long items under 4096 characters and says how many were left out' {
+        $alerts = 1..10 | ForEach-Object { New-Alert 'permission' ('x' * 5000) ('t' * 300) ('C:\p\' + ('f' * 200)) }
+        $t = Format-AlertText $alerts $script:S
+        $t.Length | Should -BeLessOrEqual 4096
+        $shown = @($t -split "`n`n" | Where-Object { $_.StartsWith($script:S.tgPermission) }).Count
+        $shown | Should -BeGreaterThan 0
+        $left = 10 - $shown
+        $left | Should -BeGreaterThan 0
+        $t.EndsWith(($script:S.tgMore -f $left)) | Should -BeTrue
+    }
+    It 'says nothing about leftovers when everything fits' {
+        $t = Format-AlertText @((New-Alert), (New-Alert)) $script:S
+        $t | Should -Not -Match 'more'
+    }
+    It 'holds the cap even for a single huge title, project and detail' {
+        $t = Format-AlertText @(New-Alert 'permission' ('x' * 100000) ('t' * 100000) ('C:\' + ('p' * 100000))) $script:S
+        $t.Length | Should -BeLessOrEqual 4096
+        $t.StartsWith($script:S.tgPermission) | Should -BeTrue
+    }
+    It 'holds the cap with 1000 short items' {
+        $alerts = 1..1000 | ForEach-Object { New-Alert 'done' 'ok' }
+        $t = Format-AlertText $alerts $script:S
+        $t.Length | Should -BeLessOrEqual 4096
+        $t | Should -Match '\+\d+ more$'
+    }
+    It 'gives nothing for no alerts' {
+        Format-AlertText @() $script:S | Should -BeExactly ''
+    }
+}
+
+Describe 'Read-SentAlerts / Save-SentAlerts' {
+    BeforeEach {
+        $script:Dir = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:Dir | Out-Null
+    }
+
+    It 'reads an empty table when there is no file' {
+        $r = Read-SentAlerts $script:Dir
+        $r | Should -BeOfType [hashtable]
+        $r.Count | Should -Be 0
+    }
+    It 'saves and reads back key -> message, session, at, resolved' {
+        $now = Get-NowMs
+        $sent = @{ 'req:a1' = @{ message = 77; session = 's1'; at = $now; resolved = $false }
+                   'done:d1' = @{ message = 78; session = 's2'; at = $now - 1000; resolved = $true } }
+        Save-SentAlerts $script:Dir $sent | Should -BeTrue
+        $r = Read-SentAlerts $script:Dir
+        $r.Count | Should -Be 2
+        $r['req:a1'].message | Should -Be 77
+        $r['req:a1'].session | Should -BeExactly 's1'
+        $r['req:a1'].at | Should -Be $now
+        $r['req:a1'].resolved | Should -BeFalse
+        $r['done:d1'].resolved | Should -BeTrue
+        $r['req:a1'] | Should -BeOfType [hashtable]
+    }
+    It 'overwrites the previous file and leaves no .tmp' {
+        $now = Get-NowMs
+        Save-SentAlerts $script:Dir @{ 'a' = @{ message = 1; session = 's'; at = $now; resolved = $false } } | Out-Null
+        Save-SentAlerts $script:Dir @{ 'b' = @{ message = 2; session = 's'; at = $now; resolved = $false } } | Should -BeTrue
+        $r = Read-SentAlerts $script:Dir
+        $r.ContainsKey('a') | Should -BeFalse
+        $r.ContainsKey('b') | Should -BeTrue
+        (Join-Path $script:Dir 'telegram-sent.json.tmp') | Should -Not -Exist
+    }
+    It 'Read-SentAlerts drops entries older than 24 h' {
+        $now = Get-NowMs
+        $h = 3600000
+        Save-SentAlerts $script:Dir @{
+            'old'   = @{ message = 1; session = 's'; at = $now - 24 * $h - 60000; resolved = $false }
+            'fresh' = @{ message = 2; session = 's'; at = $now - 23 * $h; resolved = $false } } | Out-Null
+        $r = Read-SentAlerts $script:Dir
+        $r.ContainsKey('old') | Should -BeFalse
+        $r.ContainsKey('fresh') | Should -BeTrue
+    }
+    It 'drops entries that have no usable time' {
+        [IO.File]::WriteAllText((Join-Path $script:Dir 'telegram-sent.json'), '{"a":{"message":1},"b":{"message":2,"at":"soon"},"c":5}')
+        (Read-SentAlerts $script:Dir).Count | Should -Be 0
+    }
+    It 'reads an empty table from a broken file' {
+        [IO.File]::WriteAllText((Join-Path $script:Dir 'telegram-sent.json'), '{"a": ')
+        (Read-SentAlerts $script:Dir).Count | Should -Be 0
+    }
+    It 'Save-SentAlerts returns $false when it cannot write' {
+        $lock = [IO.File]::Open((Join-Path $script:Dir 'telegram-sent.json.tmp'), 'Create', 'ReadWrite', 'None')
+        try { Save-SentAlerts $script:Dir @{ 'a' = @{ at = (Get-NowMs) } } | Should -BeFalse } finally { $lock.Dispose() }
+    }
+}

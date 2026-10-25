@@ -60,7 +60,14 @@
     "wantsTool": "Quer usar a ferramenta {0}",
     "readyNext": "Pronto para a próxima mensagem.",
     "deniedMessage": "Negado pelo usuário no widget",
-    "answeredReason": "Respondido no widget"
+    "answeredReason": "Respondido no widget",
+    "tgPermission": "🔔 Permissão aguardando",
+    "tgQuestion": "❓ Pergunta aguardando",
+    "tgDone": "✅ Terminou",
+    "tgPlan": "📋 Plano aguardando aprovação",
+    "tgMore": "… +{0} mais",
+    "tgResolved": "✅ resolvido",
+    "tgTest": "Teste do Claude Code Widget: os alertas funcionam."
   },
   "en": {
     "windowTitle": "Claude Code - permissions",
@@ -123,7 +130,14 @@
     "wantsTool": "Wants to use the {0} tool",
     "readyNext": "Ready for your next message.",
     "deniedMessage": "Denied by the user in the widget",
-    "answeredReason": "Answered in the widget"
+    "answeredReason": "Answered in the widget",
+    "tgPermission": "🔔 Permission waiting",
+    "tgQuestion": "❓ Question waiting",
+    "tgDone": "✅ Finished",
+    "tgPlan": "📋 Plan waiting for approval",
+    "tgMore": "… +{0} more",
+    "tgResolved": "✅ resolved",
+    "tgTest": "Test from Claude Code Widget: alerts work."
   },
   "es": {
     "windowTitle": "Claude Code - permisos",
@@ -186,6 +200,13 @@
     "wantsTool": "Quiere usar la herramienta {0}",
     "readyNext": "Listo para tu próximo mensaje.",
     "deniedMessage": "Rechazado por el usuario en el widget",
-    "answeredReason": "Respondido en el widget"
+    "answeredReason": "Respondido en el widget",
+    "tgPermission": "🔔 Permiso esperando",
+    "tgQuestion": "❓ Pregunta esperando",
+    "tgDone": "✅ Terminó",
+    "tgPlan": "📋 Plan esperando aprobación",
+    "tgMore": "… +{0} más",
+    "tgResolved": "✅ resuelto",
+    "tgTest": "Prueba de Claude Code Widget: las alertas funcionan."
   }
 }
