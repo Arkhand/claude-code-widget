@@ -6,7 +6,7 @@ Um widget para o [Claude Code](https://code.claude.com) no Windows que fica semp
 
 - **Pedidos de permissão**: mostra a ferramenta, o comando ou arquivo e o projeto, com os botões **Aprovar**, **Negar** e **Decidir no VS Code**.
 - **Perguntas do Claude** (as de múltipla escolha): você marca uma ou várias opções, ou escreve a sua resposta.
-- **Aviso de "terminou"**: quando o Claude termina uma resposta, o widget mostra o projeto e o começo da resposta, com um botão que leva de volta para a janela daquela sessão: VS Code ou terminal.
+- **Aviso de "terminou"**: quando o Claude termina uma resposta, o widget mostra o projeto e o começo da resposta, com um botão que leva de volta para a janela daquela sessão: VS Code, terminal ou o app desktop do Claude. Avisos de várias sessões se empilham, um cartão por aviso, e cada um fecha sozinho depois de 5 minutos.
 
 Quando não há nada para mostrar, ele vira uma pílula pequena, que dá para arrastar para qualquer canto:
 
@@ -85,23 +85,23 @@ O widget volta a abrir no canto padrão, porque o nome novo vem com uma pasta de
 | --- | --- |
 | Ponto laranja piscando, **pedido de permissão** | **Aprovar** executa a ação. **Negar** bloqueia e avisa o Claude que você negou. **Decidir no VS Code** mostra o pedido normal no VS Code. Num **Edit** ou **Write**, o cartão mostra o diff. **Sempre permitir...** aprova e grava a regra do botão (nesta sessão, neste projeto ou em todos os projetos); só oferece regras que o próprio Claude Code sugeriu. |
 | Ponto azul piscando, **pergunta** | Marque uma opção (ou várias, quando a pergunta permite) e clique em **Responder**. **Outra resposta** deixa você digitar; o Enter também envia. **Responder no VS Code** devolve a pergunta para o VS Code. |
-| ✓ verde, **terminou** | **Ir para o VS Code** ou **Ir para o terminal** traz para a frente a janela daquela sessão. **Ok** fecha o aviso. |
+| ✓ verde, **terminou** | **Ir para o VS Code**, **Ir para o terminal** ou **Ir para a janela** traz para a frente a janela daquela sessão. **Ok** ou **✕** fecha o aviso; o anel ao lado do ✕ esvazia durante os 5 minutos antes de ele fechar sozinho. Um cartão por aviso, o mais novo em cima (até 4; o último conta os demais). Quando a vez terminou com uma pergunta na caixa de "próximo passo" do app desktop do Claude, o cartão diz **pergunta para você** e mostra a pergunta (responda no app). |
 | Pílula parada, **N trabalhando** | Clique para listar as sessões que estão trabalhando (projeto, título, tempo). Clique de novo para fechar a lista. |
 
-- **Arraste** o widget para onde quiser. Ele lembra a posição.
+- **Arraste** o widget para onde quiser, em qualquer monitor. Ele lembra a posição pela borda de cima: cartões e avisos crescem para baixo a partir dali (para cima só quando não cabem), e o widget fica sempre dentro de um monitor.
 - **Duplo clique** no widget (fora dos botões) traz a janela da sessão: no aviso de "terminou", a daquela sessão; nos outros casos, a da última sessão em que você digitou.
 - **Botão direito** abre o menu: **Tema**, **Opacidade**, **Volume**, **Tamanho**, **Pílula mínima** (veja [Aparência e som](#aparência-e-som)) e **Fechar widget**. Fechar devolve os pedidos pendentes ao VS Code, e o widget abre de novo na próxima sessão ou no próximo pedido (com o "não perturbe" ligado, ele continua escondido).
 - **Ícone na bandeja.** O clique esquerdo liga e desliga o **não perturbe**; o botão direito abre o menu. No modo, pedidos e perguntas vão direto para o VS Code, o widget fica escondido e os avisos de "terminou" esperam até você desligar. Fica ligado até você desligar, inclusive depois de reiniciar. O Windows pode esconder ícones novos na bandeja: arraste-o para a barra uma vez.
-- Com vários pedidos ou sessões, aparece quantos estão esperando (`+1 na fila`), e eles vêm um de cada vez.
+- Com vários pedidos, aparece quantos estão esperando (`+1 na fila`), e eles vêm um de cada vez, antes de qualquer aviso de "terminou".
 - O chip do projeto também mostra o título da sessão (o nome dado com `/rename`, ou o automático do Claude Code). Quando várias sessões estavam trabalhando e a última termina, o aviso toca um som diferente.
 
 ## Comportamentos importantes
 
 - **Nunca tira o foco.** Você continua digitando onde estava, mesmo quando clica nos botões. A única exceção é a **Outra resposta**: o widget pega o foco para você digitar e depois devolve.
 - **Limite de 5 minutos.** Se ninguém responder, o cartão fecha e o pedido vai para o VS Code normalmente.
-- **Longe do computador.** Sem uso de mouse nem teclado por 2 minutos, pedidos e perguntas não passam pelo widget e vão direto para o VS Code. Isso vale também para um cartão que já estava na tela. Se você usa o [Remote Control](https://code.claude.com/docs/en/remote-control), é assim que eles chegam no celular ou no navegador sem atraso.
+- **Longe do computador.** Sem uso de mouse nem teclado por 5 minutos, pedidos e perguntas não passam pelo widget e vão direto para o VS Code. Isso vale também para um cartão que já estava na tela. Se você usa o [Remote Control](https://code.claude.com/docs/en/remote-control), é assim que eles chegam no celular ou no navegador sem atraso.
 - **Troca de monitor.** Se o monitor do widget some (por exemplo, quando você tira o notebook da dock), o widget vai para o canto inferior direito da tela principal em até 2 segundos. Quando o monitor volta, ele volta para onde você tinha colocado.
-- **Sem aviso de "terminou" enquanto você está olhando.** Quando você manda uma mensagem, o widget guarda a janela onde você digitou: VS Code ou terminal. Se essa janela estiver na frente quando o Claude terminar, o aviso não aparece. No Windows Terminal isso vale por janela, não por aba. O aviso também some quando você manda uma mensagem nova naquela sessão, e depois de 12 horas.
+- **Sem aviso de "terminou" enquanto você está olhando.** Quando você manda uma mensagem, o widget guarda a janela onde você digitou: VS Code ou terminal. Se essa janela estiver na frente quando o Claude terminar, o aviso não aparece. No Windows Terminal isso vale por janela, não por aba. O app desktop do Claude é a exceção: uma janela só reúne todas as sessões, então os avisos dele sempre aparecem. O aviso também some quando você manda uma mensagem nova naquela sessão, e depois de 5 minutos.
 - **Aprovação de plano fica no VS Code.** Aprovar um plano (`ExitPlanMode`) nunca passa pelo widget.
 - **O que ele não faz:** mandar prompts novos. O Claude Code não tem um jeito suportado de enviar mensagens para uma sessão aberta no VS Code. Para isso, use o Remote Control.
 
@@ -111,8 +111,8 @@ Defina estas variáveis de ambiente no bloco `env` do `~/.claude/settings.json`:
 
 | Variável | Padrão | O que faz |
 | --- | --- | --- |
-| `CLAUDE_WIDGET_LANG` | idioma do Windows | `pt` ou `en`. Qualquer outro valor usa inglês. |
-| `CLAUDE_WIDGET_AWAY_SECS` | `120` | Segundos sem uso de mouse nem teclado até os pedidos deixarem de passar pelo widget. |
+| `CLAUDE_WIDGET_LANG` | idioma do Windows | `pt`, `es` ou `en`. Qualquer outro valor usa inglês. |
+| `CLAUDE_WIDGET_AWAY_SECS` | `300` | Segundos sem uso de mouse nem teclado até os pedidos deixarem de passar pelo widget. |
 | `CLAUDE_WIDGET_HOTKEYS` | desligado | `1` liga os atalhos globais. Enquanto ligados, essas combinações deixam de funcionar nos outros programas, e Aprovar/Negar agem no cartão de permissão que estiver na tela, sem você olhar. |
 | `CLAUDE_WIDGET_KEY_APPROVE` | `Ctrl+Alt+Y` | Atalho que aprova o cartão de permissão na tela. |
 | `CLAUDE_WIDGET_KEY_DENY` | `Ctrl+Alt+N` | Atalho que nega. |
@@ -132,11 +132,11 @@ As variáveis de atalho são lidas quando o widget inicia; reinicie-o depois de 
 
 Clique com o botão direito no widget para mudar como ele parece e soa. Cada escolha vale na hora e fica salva em `prefs.json`, na pasta de dados do plugin.
 
-Você também pode editá-lo à mão (reinicie o widget depois): `{"theme":"dark","opacity":1,"volume":100,"scale":1,"minimal":false}`. `theme` é `dark`, `light`, `auto` ou `minecraft`; `opacity` vai de 0,5 a 1; `volume` de 0 a 100; `scale` é 1, 1,25 ou 1,5; `minimal` é true ou false. Um valor ausente ou inválido volta ao padrão.
+Você também pode editá-lo à mão (reinicie o widget depois): `{"theme":"dark","opacity":1,"volume":100,"scale":1,"minimal":false}`. `theme` é `dark`, `light` ou `auto`; `opacity` vai de 0,5 a 1; `volume` de 0 a 100; `scale` é 1, 1,25 ou 1,5; `minimal` é true ou false. Um valor ausente ou inválido volta ao padrão.
 
 | Menu | Opções |
 | --- | --- |
-| Tema | Escuro (padrão), Claro ou Automático (segue o tema de aplicativos do Windows quando o widget abre) ou Minecraft (veja abaixo) |
+| Tema | Escuro (padrão), Claro ou Automático (segue o tema de aplicativos do Windows quando o widget abre) |
 | Opacidade | 100, 90, 80, 70 ou 60% |
 | Volume | Mudo, 25, 50, 75 ou 100% (padrão) |
 | Tamanho | 100% (padrão), 125% ou 150% |
@@ -146,11 +146,7 @@ Você também pode editá-lo à mão (reinicie o widget depois): `{"theme":"dark
 
 O volume vale para os três sons do widget (pedido, terminou, tudo pronto). Se o Windows não conseguir tocar um arquivo de som, o widget usa o som do sistema, que ignora o volume (o Mudo continua silenciando).
 
-### Tema Minecraft (baixa da Mojang)
-
-O item **Minecraft** do menu Tema é a única parte do widget que usa a internet, e só uma vez, quando você clica nele. O widget baixa cerca de 4 MB de texturas e sons dos servidores da Mojang (os mesmos que o launcher do jogo usa: `piston-meta.mojang.com`, `piston-data.mojang.com` e `resources.download.minecraft.net`) para a pasta de dados do plugin (`minecraft\`). O tema liga quando o download termina; se falhar, você continua no tema atual e o motivo vai para o `widget.log`. Com o tema ligado, os cartões ganham cantos retos, moldura de terra com uma faixa de grama no topo e orbes de XP nos pontos de status, e os sons mudam (pedido: orbe de XP, terminou: pop de item, tudo pronto: level up). Se o Windows não tocar arquivos `.ogg` (algumas edições Windows N), ficam os sons do sistema.
-
-Nenhum arquivo da Mojang faz parte deste repositório, e por isso não há imagem deste tema. Minecraft é marca da Mojang Studios e da Microsoft; este projeto não tem vínculo com elas. Para remover os arquivos, apague a pasta `minecraft` na pasta de dados do plugin.
+O tema Minecraft da 2.5.x foi removido na 2.6.0, então o widget não baixa mais nada. Um `prefs.json` que ainda diga `minecraft` volta ao tema escuro, e você pode apagar a pasta `minecraft` que sobrou na pasta de dados do plugin.
 
 ## Como funciona
 
@@ -168,7 +164,7 @@ Claude Code ──hook──▶ hook.ps1 ──queue\req-<id>.json──▶ widg
 
 - Aprovar no widget é o mesmo que clicar em **Allow** no VS Code. O widget mostra o comando ou o caminho do arquivo inteiro antes de você decidir.
 - **Sempre permitir** grava uma regra permanente: o botão mostra a regra e onde ela vai, e o widget só grava regras que o próprio Claude Code sugeriu para aquele pedido (nunca regras que apagam as suas, nem "bypass permissions").
-- Tudo fica na sua máquina. Não há telemetria, e o único uso da rede é o download único do tema Minecraft, opcional, dos servidores da Mojang (veja acima). Os únicos dados são os arquivos na pasta de dados do plugin, dentro do seu perfil de usuário.
+- Tudo fica na sua máquina. Não há telemetria nem uso da rede. Os únicos dados são os arquivos na pasta de dados do plugin, dentro do seu perfil de usuário.
 - Pedidos e respostas são arquivos comuns que só o seu usuário do Windows pode gravar. Um programa rodando como você conseguiria gravar uma resposta, mas um programa assim já conseguiria fazer qualquer coisa que você faz.
 - Aprovação de plano e tudo o que você não responder sempre voltam para a confirmação normal do Claude Code.
 
