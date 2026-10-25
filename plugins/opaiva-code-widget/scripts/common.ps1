@@ -354,7 +354,7 @@ function Format-RuleText($Rule) {
 
 # ---------------- Preferences (prefs.json) and theme ----------------
 
-function Get-DefaultPrefs { @{ theme = 'dark'; opacity = 1.0; volume = 100; scale = 1.0; minimal = $false } }
+function Get-DefaultPrefs { @{ theme = 'dark'; opacity = 1.0; volume = 100; scale = 1.0; minimal = $false; notifyAfter = 5; telegram = $false } }
 
 # prefs.json in the data dir. Always returns a complete, valid set: a missing file gives the defaults,
 # and each bad field falls back to its default on its own.
@@ -385,13 +385,17 @@ function Read-Prefs([string]$Dir) {
         $p.scale = $best
     }
     if ($j.minimal -is [bool]) { $p.minimal = $j.minimal }
+    # Minutes of absence before a Telegram alert: only 1, 3 or 5 (no snapping to the nearest, unlike scale)
+    $n = & $num $j.notifyAfter
+    if ($null -ne $n -and @(1, 3, 5) -contains $n) { $p.notifyAfter = [int]$n }
+    if ($j.telegram -is [bool]) { $p.telegram = $j.telegram }
     return $p
 }
 
 # Overwrites prefs.json. Returns $false (never throws) when it cannot write.
 function Save-Prefs([string]$Dir, $Prefs) {
     try {
-        $o = [ordered]@{ theme = [string]$Prefs.theme; opacity = [double]$Prefs.opacity; volume = [int]$Prefs.volume; scale = [double]$Prefs.scale; minimal = [bool]$Prefs.minimal }
+        $o = [ordered]@{ theme = [string]$Prefs.theme; opacity = [double]$Prefs.opacity; volume = [int]$Prefs.volume; scale = [double]$Prefs.scale; minimal = [bool]$Prefs.minimal; notifyAfter = [int]$Prefs.notifyAfter; telegram = [bool]$Prefs.telegram }
         $path = Join-Path $Dir 'prefs.json'
         # Whole file at once: a crash in the middle never leaves half a prefs.json
         [IO.File]::WriteAllText("$path.tmp", ($o | ConvertTo-Json -Compress), (Get-Utf8NoBom))

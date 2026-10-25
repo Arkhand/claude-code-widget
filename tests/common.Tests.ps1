@@ -523,6 +523,27 @@ Describe 'Read-Prefs / Save-Prefs' {
         $p.scale | Should -Be 1.0
         $p.minimal | Should -BeFalse
     }
+    It 'defaults notifyAfter to 5 and telegram to false' {
+        $p = Read-Prefs $dir
+        $p.notifyAfter | Should -Be 5
+        $p.telegram | Should -BeFalse
+    }
+    It 'keeps notifyAfter <n>' -ForEach @(@{ n = 1 }, @{ n = 3 }, @{ n = 5 }) {
+        [IO.File]::WriteAllText($file, ('{"notifyAfter":' + $n + '}'))
+        (Read-Prefs $dir).notifyAfter | Should -Be $n
+    }
+    It 'falls back to 5 for notifyAfter <v>' -ForEach @(@{ v = 0 }, @{ v = 2 }, @{ v = 10 }, @{ v = 'x' }, @{ v = $true }) {
+        [IO.File]::WriteAllText($file, (@{ notifyAfter = $v } | ConvertTo-Json -Compress))
+        (Read-Prefs $dir).notifyAfter | Should -Be 5
+    }
+    It 'reads telegram true' {
+        [IO.File]::WriteAllText($file, '{"telegram":true}')
+        (Read-Prefs $dir).telegram | Should -BeTrue
+    }
+    It 'ignores a non-bool telegram' {
+        [IO.File]::WriteAllText($file, '{"telegram":"yes"}')
+        (Read-Prefs $dir).telegram | Should -BeFalse
+    }
     It 'gives the defaults when the file is not JSON' {
         [IO.File]::WriteAllText($file, '{{ not json')
         (Read-Prefs $dir).theme | Should -Be 'dark'
@@ -575,6 +596,13 @@ Describe 'Read-Prefs / Save-Prefs' {
         Save-Prefs $dir $want | Should -BeTrue
         $p = Read-Prefs $dir
         foreach ($k in $want.Keys) { $p[$k] | Should -Be $want[$k] }
+    }
+    It 'round-trips notifyAfter and telegram' {
+        $want = @{ theme = 'dark'; opacity = 1.0; volume = 100; scale = 1.0; minimal = $false; notifyAfter = 3; telegram = $true }
+        Save-Prefs $dir $want | Should -BeTrue
+        $p = Read-Prefs $dir
+        $p.notifyAfter | Should -Be 3
+        $p.telegram | Should -BeTrue
     }
     It 'replaces an existing file' {
         Save-Prefs $dir @{ theme = 'light'; opacity = 1.0; volume = 100; scale = 1.0; minimal = $false } | Out-Null
