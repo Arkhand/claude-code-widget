@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.7.0 (2026-10-25)
+
+- **Telegram alerts (optional).** Connect from the right-click menu (**Telegram → Connect Telegram…**): a 3-step setup card inside the widget. You create a bot with BotFather, paste its token and press Start in your bot; the widget finds your chat by itself with a one-time code. The token is saved in `telegram.json`, encrypted with Windows DPAPI for your Windows user. **Alerts on**, **Alert after** (1, 3 or 5 minutes), **Send test** and **Disconnect** are in the same submenu.
+- **When it alerts.** A request or a question nobody answers for **Alert after**; a request that skips the widget because you are away, or a card on screen when you go away; a "finished" notice still open at **Alert after** (Claude desktop app sessions only if you are away); and requests waiting in VS Code (plan approval, **Decide in VS Code**, do not disturb, widget not running) that waited **Alert after** while you are away. With "do not disturb" on, Telegram only fires when you are away. Alerts that fall within a few seconds go in one message, and a message is edited to "resolved" when the session moves on.
+- **Close automatically.** New menu: 1, 3, 5 (default), 15, 30 minutes or **Never**, for cards and for "finished" notices. Never keeps a card until you answer, you go away or 60 minutes pass, and a notice until you close it or look at its window (12 hours at most); it shows no countdown. At **Alert after** a card that is still there stays if you are at the computer, and goes back to VS Code if you are away, so Remote Control can answer it. The `PermissionRequest` and `PreToolUse` hooks wait up to 3630 seconds (was 330).
+- **A "finished" notice closes when you look at it**: when you bring its session's window to the front (not for Claude desktop app sessions, where one window holds every session).
+- **New `Notification` hook** (async, prints nothing; only for permission and question prompts). It tells the widget that a session waits in VS Code, for the Telegram alerts.
+- **Network.** Without Telegram connected there is still no network use. With it, only `telegram.ps1` talks to the network, only to `api.telegram.org`, and the hook never does. `prefs.json` also holds `closeAfter`, `notifyAfter` and `telegram`.
+- **Fix: the `CLAUDE_WIDGET_*` variables in the `env` block of `~/.claude/settings.json` now reach the widget.** The hook starts the widget through WMI, which does not pass its environment on, so a widget started that way never saw them (reproduced with the hotkey setting). The widget now reads that block itself when it starts.
+- **Fix: the right-click menu closes when you click elsewhere.**
+
 ## 2.6.0 (2026-10-25)
 
 - **"Finished" notices stack.** One box per notice, newest on top (up to 4; the last one counts the rest), each with its own **✕**, **OK** and "go to" button. New boxes unfold and closed ones fold away, so the boxes below slide instead of jumping.
