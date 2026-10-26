@@ -125,12 +125,13 @@ When it sends a message:
 | --- | --- |
 | A permission request or question waits unanswered for **Alert after** (1, 3 or 5 minutes; default 5) | A message at that moment. The card stays on screen if you are at the computer. If you are away, it goes back to VS Code right then, so Remote Control can answer it. |
 | You are away (no input for 5 minutes) and a request skips the widget, or you go away while its card is on screen | A message right away. |
-| A "finished" notice is still open at **Alert after** | A message. If the notice closes by itself sooner, the message goes out up to 15 seconds before. For a Claude desktop app session, only if you are away. |
+| A "finished" notice is still open at **Alert after** | A message. If the notice closes by itself sooner, the message goes out up to 15 seconds before. For a Claude desktop app session, only if you are away at that moment. Only then: a notice that stays open longer does not alert later, for example when you step away or after you turn Alerts on. |
 | A request waits in VS Code (plan approval, **Decide in VS Code**, do not disturb, widget not running) | A message once it has waited **Alert after** and you are away. |
 | You answered, the notice closed or you looked at its window in time | None. |
 
 - **Do not disturb** silences the widget, not the phone: with it on, Telegram only fires when you are away.
 - Alerts that fall within a few seconds of each other go in one message.
+- Turning **Alerts on** (or connecting) never sends what was queued while alerts were off.
 - When the session moves on (you answered in VS Code, Claude went on, a new prompt), the message is edited to **✅ resolved**, so an old alert on your phone does not look pending.
 - The message has the project, the session title and what is waiting: the tool and the command or file (cut to about 200 characters), the question, or the start of the reply. Never the token, the diff or a whole file.
 - **Alert after** only decides when the message goes out. How long a card or a notice stays on screen is **Close automatically**.

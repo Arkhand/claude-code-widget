@@ -673,7 +673,7 @@ function Set-SessionSeen([string]$Queue, [string]$Session) {
 # results, $Waits are wait-*.json markers, $Sent is the table of Read-SentAlerts. Each result is a hashtable:
 # key (what goes into $Sent), source (req|done|wait), kind (permission|question|plan|done), session, cwd,
 # title, detail, created, reason.
-# $NoticeAfterMs (default $AfterMs) is the age at which a notice is due: the widget deletes notices at closeAfter,
+# $NoticeAfterMs (default $AfterMs) is the age at which a notice is due (for 60 s): the widget deletes notices at closeAfter,
 # so it passes Get-NoticeAlertMs, or a notice would be gone before it could ever alert.
 # This does not check that Telegram is connected: the caller only asks when it is.
 function Get-DueAlerts($Outbox, $Notices, $Waits, $Sent, [int64]$NowMs, [int64]$AfterMs, [bool]$Away, [bool]$Dnd, [int64]$NoticeAfterMs = -1) {
@@ -694,11 +694,13 @@ function Get-DueAlerts($Outbox, $Notices, $Waits, $Sent, [int64]$NowMs, [int64]$
 
     # A finished notice still open at X. In the Claude desktop app one window hosts every session, so being in
     # front says nothing there; with do not disturb the widget is hidden, so you did not see it either: both
-    # only count when you are away.
+    # only count when you are away. Due only around X (60 s covers the 2 s rounds and the batch window): a notice
+    # whose moment passed (you were present, Telegram was off, the widget was not running) never alerts later.
     foreach ($n in @($Notices)) {
         if (-not $n) { continue }
         $created = [int64]$n.created
-        if ($created -le 0 -or ($NowMs - $created) -lt $NoticeAfterMs) { continue }
+        $age = $NowMs - $created
+        if ($created -le 0 -or $age -lt $NoticeAfterMs -or $age -ge $NoticeAfterMs + 60000) { continue }
         if (([bool]$n.desktopApp -or $Dnd) -and -not $Away) { continue }
         $key = "done:$($n.key)"
         if ($sentKeys.ContainsKey($key)) { continue }
@@ -808,6 +810,14 @@ function Read-AlertFiles([string]$Queue, [string]$Prefix) {
         if (-not $o) { continue }
         $o | Add-Member -NotePropertyName file -NotePropertyValue $f.FullName -Force
         $o
+    }
+}
+
+# Drops the outbox entries (tg-*.json) created before $BeforeMs. Telegram just became ready (connected, or
+# Alerts on): what was queued before, while it was then turned off, is old news and must not go out now.
+function Remove-AlertOutbox([string]$Queue, [int64]$BeforeMs) {
+    foreach ($e in @(Read-AlertFiles $Queue 'tg')) {
+        if ([int64]$e.created -lt $BeforeMs) { Remove-Item -LiteralPath $e.file -Force -ErrorAction SilentlyContinue }
     }
 }
 

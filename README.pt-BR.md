@@ -125,12 +125,13 @@ Quando ele manda uma mensagem:
 | --- | --- |
 | Um pedido de permissão ou uma pergunta espera sem resposta por **Alertar após** (1, 3 ou 5 minutos; padrão 5) | Uma mensagem nesse momento. O cartão continua na tela se você está no computador. Se você está longe, ele volta para o VS Code na hora, para o Remote Control poder responder. |
 | Você está longe (sem uso por 5 minutos) e um pedido não passa pelo widget, ou você se afasta com o cartão na tela | Uma mensagem na hora. |
-| Um aviso de "terminou" ainda está aberto em **Alertar após** | Uma mensagem. Se o aviso fechar sozinho antes, a mensagem sai até 15 segundos antes. Numa sessão do app desktop do Claude, só se você estiver longe. |
+| Um aviso de "terminou" ainda está aberto em **Alertar após** | Uma mensagem. Se o aviso fechar sozinho antes, a mensagem sai até 15 segundos antes. Numa sessão do app desktop do Claude, só se você estiver longe nesse momento. Só nesse momento: um aviso que fica aberto mais tempo não alerta depois, por exemplo quando você se afasta ou depois de ligar os Alertas. |
 | Um pedido espera no VS Code (aprovação de plano, **Decidir no VS Code**, não perturbe, widget fechado) | Uma mensagem quando ele esperou **Alertar após** e você está longe. |
 | Você respondeu, o aviso fechou ou você olhou para a janela dele a tempo | Nenhuma. |
 
 - O **não perturbe** silencia o widget, não o celular: com ele ligado, o Telegram só dispara quando você está longe.
 - Alertas que caem com poucos segundos de diferença vão numa só mensagem.
+- Ligar os **Alertas** (ou conectar) nunca envia o que ficou na fila enquanto eles estavam desligados.
 - Quando a sessão segue em frente (você respondeu no VS Code, o Claude continuou, um prompt novo), a mensagem é editada para **✅ resolvido**, para um alerta antigo no celular não parecer pendente.
 - A mensagem traz o projeto, o título da sessão e o que está esperando: a ferramenta e o comando ou arquivo (cortado em cerca de 200 caracteres), a pergunta, ou o começo da resposta. Nunca o token, o diff nem um arquivo inteiro.
 - **Alertar após** só decide quando a mensagem sai. Quanto tempo um cartão ou um aviso fica na tela é o **Fechar automaticamente**.

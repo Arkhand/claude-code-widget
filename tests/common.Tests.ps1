@@ -999,6 +999,20 @@ Describe 'Telegram alert files' {
         (Join-Path $script:Q 'wait-s3.json') | Should -Not -Exist
         (Join-Path $script:Q 'wait-s4.json') | Should -Exist
     }
+    It 'Remove-AlertOutbox drops the outbox entries created before the given time, and only those' {
+        $old = Add-AlertOutbox $script:Q @{ kind = 'permission'; session = 's'; created = 1000 }
+        $edge = Add-AlertOutbox $script:Q @{ kind = 'permission'; session = 's'; created = 2000 }
+        $new = Add-AlertOutbox $script:Q @{ kind = 'permission'; session = 's'; created = 3000 }
+        Set-WaitMarker $script:Q @{ session = 's1'; kind = 'plan'; created = 1 }
+        Remove-AlertOutbox $script:Q 2000
+        (Join-Path $script:Q "tg-$old.json") | Should -Not -Exist
+        (Join-Path $script:Q "tg-$edge.json") | Should -Exist
+        (Join-Path $script:Q "tg-$new.json") | Should -Exist
+        (Join-Path $script:Q 'wait-s1.json') | Should -Exist
+    }
+    It 'Remove-AlertOutbox works without a queue folder' {
+        { Remove-AlertOutbox $script:Q (Get-NowMs) } | Should -Not -Throw
+    }
     It 'Set-SessionSeen works when there is no marker and no queue folder yet' {
         { Set-SessionSeen $script:Q 'nobody' } | Should -Not -Throw
         (Join-Path $script:Q 'seen-nobody.json') | Should -Exist
@@ -1103,6 +1117,30 @@ Describe 'Get-DueAlerts' {
             @{ age = 286; count = 1 }, @{ age = 284; count = 0 }) {
             $n = New-Notice ($script:Now - $age * 1000)
             @(Get-DueAlerts @() @($n) @() @{} $script:Now 300000 $false $false -NoticeAfterMs 285000).Count | Should -Be $count
+        }
+        It 'a notice is due only within 60 s after X: <age> ms past X -> <count>' -ForEach @(
+            @{ age = 0; count = 1 }, @{ age = 59999; count = 1 }, @{ age = 60000; count = 0 }, @{ age = 3 * 3600000; count = 0 }) {
+            (Get-Due -Notices @(New-Notice ($script:Now - $script:After - $age))).Count | Should -Be $count
+        }
+        It 'the 60 s window follows NoticeAfterMs: <age> ms -> <count>' -ForEach @(
+            @{ age = 344999; count = 1 }, @{ age = 345000; count = 0 }) {
+            $n = New-Notice ($script:Now - $age)
+            @(Get-DueAlerts @() @($n) @() @{} $script:Now 300000 $false $false -NoticeAfterMs 285000).Count | Should -Be $count
+        }
+        It 'a desktop app notice still open hours after X does not alert when you step away now' {
+            (Get-Due -Notices @(New-Notice ($script:Now - $script:After - 2 * 3600000) $true) -Away $true).Count | Should -Be 0
+        }
+        It 'with DND a notice still open hours after X does not alert when you step away now' {
+            (Get-Due -Notices @(New-Notice ($script:Now - $script:After - 2 * 3600000)) -Away $true -Dnd $true).Count | Should -Be 0
+        }
+        It 'a notice skipped under DND at X does not alert once DND is off while you look at it' {
+            (Get-Due -Notices @(New-Notice ($script:Now - $script:After - 10 * 60000)) -Away $false -Dnd $false).Count | Should -Be 0
+        }
+        It 'notices already past X when Telegram becomes ready (connect, Alerts on, widget restart) are not sent' {
+            $old = @((New-Notice ($script:Now - $script:After - 2 * 60000)), (New-Notice ($script:Now - $script:After - 25 * 60000)),
+                (New-Notice ($script:Now - 11 * 3600000) $true))
+            (Get-Due -Notices $old -Away $true).Count | Should -Be 0
+            (Get-Due -Notices $old -Away $false).Count | Should -Be 0
         }
         It 'NoticeAfterMs does not change outbox entries or wait markers' {
             $w = New-Wait 'w1' ($script:Now - 286000)

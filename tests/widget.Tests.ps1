@@ -732,7 +732,8 @@ Describe 'widget.ps1 Telegram alerts' -Tag 'Desktop' {
         # A finished notice stays in the queue (an outbox entry is deleted once sent): it is still due after the restart
         $data = New-TgSandbox
         $queue = Join-Path $data 'queue'
-        $created = (Get-NowMs) - 2 * 60000
+        # Just past X (1 min): a notice is due only for 60 s after X, and must still be due after the restart
+        $created = (Get-NowMs) - 61000
         Write-JsonAtomic (Join-Path $queue "done-s1-$created.json") ([ordered]@{ session = 's1'; created = $created; cwd = 'C:\dev\alpha'
                 message = 'All tests pass'; hwnd = 0; kind = 'vscode'; title = ''; desktopApp = $false })
         $proc = Start-TgWidget $data $fake.Url
@@ -741,6 +742,7 @@ Describe 'widget.ps1 Telegram alerts' -Tag 'Desktop' {
         $proc = Start-TgWidget $data $fake.Url
         (Wait-Until { Test-Path -LiteralPath (Join-Path $data 'widget.json') }) | Should -BeTrue
         Start-Sleep -Seconds 12
+        ((Get-NowMs) - $created) | Should -BeLessThan 120000 -Because 'the notice must still be due for this to test the sent table'
         (Get-TgCalls $fake 'sendMessage').Count | Should -Be 1
         (Join-Path $queue "done-s1-$created.json") | Should -Exist
     }
@@ -884,7 +886,8 @@ Describe 'widget.ps1 Telegram alerts' -Tag 'Desktop' {
         try {
             $data = New-TgSandbox '0'
             $queue = Join-Path $data 'queue'
-            $created = (Get-NowMs) - 2 * 60000
+            # Just past X (1 min): a notice is due only for 60 s after X
+            $created = (Get-NowMs) - 62000
             $seenFile = Join-Path $queue "done-s1-$created.json"
             $otherFile = Join-Path $queue "done-s2-$created.json"
             Write-JsonAtomic $seenFile ([ordered]@{ session = 's1'; created = $created; cwd = 'C:\dev\alpha'
@@ -913,8 +916,8 @@ Describe 'widget.ps1 Telegram alerts' -Tag 'Desktop' {
         $data = New-TgSandbox '0'
         $queue = Join-Path $data 'queue'
         Set-Dnd $data $true
-        # With do not disturb a finished notice alerts only when you are away (AWAY_SECS 0: always)
-        $created = (Get-NowMs) - 2 * 60000
+        # With do not disturb a finished notice alerts only when you are away (AWAY_SECS 0: always), within 60 s of X
+        $created = (Get-NowMs) - 62000
         Write-JsonAtomic (Join-Path $queue "done-s1-$created.json") ([ordered]@{ session = 's1'; created = $created; cwd = 'C:\dev\alpha'
                 message = 'Done while hidden'; hwnd = 0; kind = 'vscode'; title = ''; desktopApp = $false })
         $proc = Start-TgWidget $data $fake.Url
@@ -1108,6 +1111,27 @@ Describe 'widget.ps1 Telegram alerts' -Tag 'Desktop' {
             (Wait-Until { (Get-TgCalls $fake 'sendMessage').Count -ge 1 } 10) | Should -BeTrue
             ((Get-TgCalls $fake 'sendMessage')[0].body | ConvertFrom-Json).text | Should -BeExactly $S.tgTest
             (Wait-WidgetElement $proc -Name $S.tgTestOk) | Should -Not -BeNullOrEmpty
+        }
+
+        It 'Alerts on drops what was queued while alerts were off, and sends what comes after' {
+            $data = New-TgSandbox
+            [IO.File]::WriteAllText((Join-Path $data 'prefs.json'), '{"telegram":false,"notifyAfter":1,"volume":0}')
+            $queue = Join-Path $data 'queue'
+            $old = Add-AlertOutbox $queue @{ kind = 'permission'; session = 's1'; cwd = 'C:\dev\alpha'; detail = 'Bash: old news'; reason = 'timeout'
+                created = (Get-NowMs) - 60000 }
+            $proc = Start-ShownTgWidget $data
+            Open-TgMenu $proc
+            Invoke-WidgetElement (Wait-WidgetElement $proc -Name $S.tgAlertsOn)
+            (Wait-Until { (Read-Prefs $data).telegram } 5) | Should -BeTrue
+            (Join-Path $queue "tg-$old.json") | Should -Not -Exist
+            [void](Add-AlertOutbox $queue @{ kind = 'permission'; session = 's2'; cwd = 'C:\dev\beta'; detail = 'Bash: new one'; reason = 'timeout' })
+            (Wait-Until { (Get-TgCalls $fake 'sendMessage').Count -ge 1 } 20) | Should -BeTrue
+            Start-Sleep -Seconds 3
+            $calls = Get-TgCalls $fake 'sendMessage'
+            $calls.Count | Should -Be 1
+            $text = ($calls[0].body | ConvertFrom-Json).text
+            $text | Should -BeLike '*Bash: new one*'
+            $text | Should -Not -BeLike '*old news*'
         }
     }
 }

@@ -1115,6 +1115,8 @@ try {
             'opacity' { Set-Opacity }
             'scale' { Set-Scale }
             'minimal' { Set-Minimal }
+            # Alerts on, or just connected: what was queued while they were off must not go out now
+            'telegram' { if ($value) { Remove-AlertOutbox $Queue (Get-NowMs) } }
         }
         if (-not (Save-Prefs $Data $script:prefs)) { Write-Log 'could not save prefs.json' }
         Sync-MenuChecks
