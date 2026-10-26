@@ -9,8 +9,8 @@ Acordado el **2026-10-25**. Todo va al fork `Arkhand/claude-code-widget`, encima
 
 ## 2.7.0 Telegram (reemplaza mcp-notify)
 Spec: `docs/superpowers/specs/2026-10-25-telegram-alerts-design.md`.
-- Regla: "si no respondo en X min, buscame en el teléfono". X = 1/3/5 min (menú, `prefs.json` `notifyAfter`, default 5) y es también el timeout del card.
-- Un solo timer: a los X el pedido vuelve a VS Code (para que Remote Control pueda responder) y sale el Telegram.
+- Regla: "si no respondo en X min, buscame en el teléfono". X = `notifyAfter` 1/3/5 min (solo Telegram).
+- Tiempos separados (Daniel lo pidió después): `closeAfter` 1/3/5/15/30/Nunca cierra cards y notices (Nunca = tope 60 min en cards, 12 h en notices). Al llegar `notifyAfter` sale el Telegram; si estás away el card pasa a VS Code (para que Remote Control responda), si estás en la compu se queda. `hooks.json` timeouts 3630.
 - Notices "terminó": Telegram si siguen abiertas a los X; la notice sigue hasta sus 5 min.
 - Away → Telegram al instante. DND → Telegram solo si además está away.
 - Batching + editar a "✅ resuelto" cuando la sesión sigue.

@@ -18,6 +18,8 @@ metadata:
 - **Windows Terminal:** la ventana se detecta por ventana, no por pestaña.
 - **Tests y tray:** sin `CLAUDE_WIDGET_NO_TRAY=1` cada widget de test deja un ícono fantasma en la bandeja.
 - **ExitPlanMode** nunca se rutea al widget (a propósito).
+- **`[IO.File]::Replace` no es atómico para lectores:** medido con un lector martillando el archivo, ve `FileNotFound` en el medio igual que borrar+mover. Lo atómico es `MoveFileEx` con replace-existing (`[Microsoft.VisualBasic.FileIO.FileSystem]::MoveFile(src, dst, $true)`), que falla si un lector tiene el archivo abierto sin share-delete (reintentar). `Save-Prefs` lo usa; `Write-JsonAtomic -Replace` sigue con `Replace` (2.7.0).
+- **Tests Desktop con la sesión bloqueada:** con Windows bloqueado (LogonUI corriendo, pantalla negra) el click derecho real no abre el menú: todos los tests de menú/wizard fallan en `Open-WidgetMenu`. No es regresión; correrlos con la sesión desbloqueada.
 
 **Why:** cada punto costó tiempo de debugging (al autor original o a Daniel en 2.6.0).
 **How to apply:** revisar antes de tocar hook.ps1 o el loop del widget. Ver [[arquitectura]].
