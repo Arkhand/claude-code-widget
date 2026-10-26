@@ -202,6 +202,25 @@ Behavior to wire (only when `Test-TelegramReady`, except the timeout and `deskto
 - [ ] **Step 2: Run** → FAIL. **Step 3: Implement** (helper + one call in the tick, before `Update-Alerts`). **Step 4: Run** → PASS.
 - [ ] **Step 5: Commit** `feat(widget): close a finished notice when you look at its session`
 
+### Task 8b: Separate close and alert timers (spec amendment)
+
+**Files:**
+- Modify: `common.ps1` (prefs), `hook.ps1` (wait loop, request timeout), `hooks/hooks.json` (timeouts), `widget.ps1` (notice max age, countdown, notice due time)
+- Test: `tests/common.Tests.ps1`, `tests/hook.Tests.ps1`, `tests/hook.e2e.Tests.ps1`, `tests/widget.Tests.ps1`
+
+**Interfaces:**
+- Produces: `$prefs.closeAfter` ([int] minutes in {1, 3, 5, 15, 30} or 0 = never; default 5); `Get-CloseAfterMs($Prefs) -> [int64]` (0 → 3600000 for cards); request files whose `timeout` is the close time in seconds plus a `noCountdown` [bool] (true for never); the hook's wait loop alerts at `notifyAfter` without returning when the user is present.
+
+Behavior (spec "Amendment: separate close and alert timers"):
+- Cards: the hook waits `closeAfter` (never = 3600 s). In `Wait-Response`, once `notifyAfter` has passed and Telegram is ready and no alert was queued for this request yet: queue the outbox entry (reason `unanswered`) and the `alerted-` stamp; if away at that moment return (`waitEnd = 'idle'`, card handed over); otherwise keep waiting. The away and timeout paths stay as they are (an alert already queued for the request is not queued again).
+- `hooks.json`: `PermissionRequest` and `PreToolUse` timeouts 3630.
+- Notices: the widget's notice max age is `closeAfter` (never = 12 h); notices are due at `min(notifyAfter, noticeMaxAge - 15 s)`.
+- The widget hides the countdown when `noCountdown`.
+
+- [ ] **Step 1: Failing tests:** `Read-Prefs` keeps 0/1/3/5/15/30 for `closeAfter`, falls back to 5 otherwise; request `timeout` follows `closeAfter` (5 → 300, never → 3600, with `noCountdown`); e2e with `CLAUDE_WIDGET_WAIT_SECS`-style short overrides: alert queued at notifyAfter while present and the hook keeps waiting; alert at notifyAfter while away hands the card over; no second outbox entry at close time; notice due at min(notifyAfter, maxAge - 15 s); notice with never stays past 5 min.
+- [ ] **Step 2: Run** → FAIL. **Step 3: Implement.** **Step 4: Run** the non-desktop suite and `tests/widget.Tests.ps1` → PASS.
+- [ ] **Step 5: Commit** `feat: separate close and Telegram alert timers`
+
 ### Task 9: Menu, setup wizard, test message, disconnect
 
 **Files:**
@@ -213,11 +232,12 @@ Behavior to wire (only when `Test-TelegramReady`, except the timeout and `deskto
 - Produces: menu items per the spec ("Menu" section) and a wizard with states `token` → `start` → `done`.
 
 Pinned details:
-- **Wait for answer ▸** via `Add-ChoiceMenu` (`key = 'notifyAfter'`, values 1, 3, 5) plus a disabled caption item; **Telegram ▸** rebuilt on `SubmenuOpened` from `Read-TelegramConfig`.
+- **Close automatically ▸** via `Add-ChoiceMenu` (`key = 'closeAfter'`, values 1, 3, 5, 15, 30, 0 labelled Never); **Telegram ▸** rebuilt on `SubmenuOpened` from `Read-TelegramConfig`, containing (when connected) **Alerts on**, **Alert after ▸** (`notifyAfter` 1/3/5), **Send test**, **Disconnect** and the caption (spec amendment).
+- **Bug to fix first (reported by Daniel):** the right-click menu does not close when he clicks the desktop. Reproduce it with a Desktop test (open the menu, click/activate another window, assert the menu closed), then fix it (likely cause: the WS_EX_NOACTIVATE window never has focus, so the ContextMenu never sees focus loss; e.g. activate the widget only while the menu is open and give focus back on Closed). The widget must still never take focus otherwise.
 - Wizard step 1: `Enable-Typing` on the token box; **Open BotFather** = `Start-Process 'https://t.me/BotFather'`; **Next** trims spaces, newlines and quotes, runs `Get-TelegramBot` in the background; error → message under the box, stay. Step 2: code = 16 random hex characters; **Open my bot** = `Start-Process "https://t.me/<bot>?start=<code>"`; poll `Find-TelegramStart` (`WaitSec` 20) in the background until found or **Cancel**. Step 3: `Save-TelegramConfig`, `Set-Pref 'telegram' $true`, `Send-TelegramText` with `tgTest`, show the connected text with the current `notifyAfter`. Cancel or closing at any step saves nothing. `Disable-Typing` when leaving step 1.
 - `Update-View` priority: request card > wizard > notices > idle; while a request is on screen the wizard waits and comes back after.
 - **Send test** shows the result for ~3 s in the pill tooltip area (OK, or bad token / blocked / no network from the `TelegramError` status). **Disconnect** = `Remove-TelegramConfig` + `Set-Pref 'telegram' $false`.
-- New `strings.json` keys (en given; write pt and es), e.g. `menuWait` "Wait for answer", `waitCaption` "After that, the request goes back to VS Code and, if connected, you get a Telegram alert.", `menuTelegram` "Telegram", `tgConnect` "Connect Telegram…", `tgConnectCaption`, `tgAlertsOn` "Alerts on", `tgSendTest` "Send test", `tgDisconnect` "Disconnect", `tgConnectedTo` "Connected to @{0}", plus the wizard texts from the mockup (steps 1-3, errors: bad token, webhook set, no network).
+- New `strings.json` keys (en given; write pt and es), e.g. `menuClose` "Close automatically", `closeNever` "Never", `menuAlertAfter` "Alert after", `menuTelegram` "Telegram", `tgConnect` "Connect Telegram…", `tgConnectCaption`, `tgAlertsOn` "Alerts on", `tgSendTest` "Send test", `tgDisconnect` "Disconnect", `tgConnectedTo` "Connected to @{0}", plus the wizard texts from the mockup (steps 1-3, errors: bad token, webhook set, no network).
 
 - [ ] **Step 1: Failing Desktop tests** against the fake: `'menu shows Connect when not connected'`, `'menu shows the connected items with the bot name'`, `'a pasted token with spaces and a newline is trimmed and accepted'`, `'a bad token stays on step 1 with an error'`, `'/start with the wrong code does not connect; the right one saves telegram.json and sends a test message'`, `'cancel saves nothing'`, `'disconnect removes telegram.json'`.
 - [ ] **Step 2: Run** → FAIL. **Step 3: Implement.** **Step 4: Run** → PASS, and render the wizard PNGs; check them by eye in dark and light themes.

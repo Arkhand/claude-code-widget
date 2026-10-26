@@ -174,3 +174,14 @@ No Telegram label on the card. The countdown stays exactly as today ("closes in 
 ## Left to the builder
 
 Setup card layout details, outbox file format and naming, batching window, how the sender runs off the UI thread, where sent-message ids are kept, exact wording of the strings.
+
+## Amendment (2026-10-25): separate close and alert timers
+
+Daniel asked to set the two times separately, e.g. a card that never closes by itself but a Telegram alert at 5 minutes. This replaces the "one timer" decision.
+
+- **Close automatically** (`closeAfter`, new pref): 1, 3, 5, 15 or 30 minutes, or **Never**. Default 5 (today's behavior). It applies to permission/question cards and to finished notices. Never means: a card stays until you answer it, you go away (the away rule still hands it over), or 60 minutes pass (the hook's own limit; `hooks.json` timeout for `PermissionRequest` and `PreToolUse` goes from 330 to 3630 s); a finished notice stays until you close it or look at its window (12 h safety cap, as before 2.6.0).
+- **Alert after** (`notifyAfter`, existing pref, now only about Telegram): 1, 3 or 5 minutes.
+- When the alert time of a card comes first: the Telegram alert goes out and the card **stays** if you are at the computer; if you are away at that moment, the card is handed to VS Code then, so the phone can answer (Remote Control only gets the request once the widget lets go). When the close time comes first (or both match), the card closes and alerts as before.
+- A finished notice alerts at `notifyAfter` if still open, and never later than 15 s before it closes by itself (generalizes ruling R13).
+- With Never, the card shows no countdown.
+- Menu: **Close automatically ▸** 1/3/5/15/30 min / Never at the top level; **Alert after ▸** 1/3/5 min moves inside **Telegram ▸** (shown when connected).
