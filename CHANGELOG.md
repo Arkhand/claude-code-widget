@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.7.1 (2026-10-26)
+
+- **"Open Claude" for Claude desktop app sessions.** The finished notice's button used to say "Go to window" and then showed whatever session the app had open: the app keeps every session in one window and has no link to open a given one. It now says **Open Claude**, and its tooltip names the session to pick in the app's sidebar.
+
 ## 2.7.0 (2026-10-25)
 
 - **Telegram alerts (optional).** Connect from the right-click menu (**Telegram → Connect Telegram…**): a 3-step setup card inside the widget. You create a bot with BotFather, paste its token and press Start in your bot; the widget finds your chat by itself with a one-time code (without Telegram on the PC, the card shows the `/start` message to send from your phone). The token is saved in `telegram.json`, encrypted with Windows DPAPI for your Windows user. **Alerts on**, **Alert after** (1, 3 or 5 minutes), **Send test** and **Disconnect** are in the same submenu.

@@ -416,6 +416,24 @@ Describe 'Test-Dnd and Set-Dnd' {
     }
 }
 
+Describe 'Get-GoToButton' {
+    BeforeAll { $S = @{ goToVsCode = 'VS'; goToTerminal = 'TERM'; goToWindow = 'WIN'; openClaude = 'CLAUDE'; openClaudeTip = 'Pick {0}' } }
+    It 'says VS Code, terminal or window by the session kind' {
+        (Get-GoToButton ([pscustomobject]@{ kind = 'vscode' }) $S).Label | Should -BeExactly 'VS'
+        (Get-GoToButton ([pscustomobject]@{ kind = 'terminal' }) $S).Label | Should -BeExactly 'TERM'
+        (Get-GoToButton ([pscustomobject]@{ kind = 'other' }) $S).Label | Should -BeExactly 'WIN'
+        (Get-GoToButton ([pscustomobject]@{ kind = '' }) $S).Label | Should -BeExactly 'VS'
+    }
+    It 'says Open Claude for a desktop app session and names the session to pick' {
+        $b = Get-GoToButton ([pscustomobject]@{ kind = 'other'; desktopApp = $true; cwd = 'C:\dev\web'; title = 'Fix login' }) $S
+        $b.Label | Should -BeExactly 'CLAUDE'
+        $b.Tip | Should -BeExactly ('Pick web ' + [char]0x00B7 + ' Fix login')
+    }
+    It 'has no tip outside the desktop app' {
+        (Get-GoToButton ([pscustomobject]@{ kind = 'terminal' }) $S).Tip | Should -BeNullOrEmpty
+    }
+}
+
 Describe 'Format-SessionLine' {
     BeforeAll { $dot = [string][char]0x00B7 }
     It 'joins project and title' {

@@ -339,6 +339,21 @@ function Format-SessionLine([string]$Cwd, [string]$Title) {
     return $text
 }
 
+# The "go to" button of a finished notice: its label by the session's window kind, and for a Claude
+# desktop app session a tip naming the session (one app window holds every session, so the widget can
+# only bring the app forward; you pick the session in its sidebar)
+function Get-GoToButton($Notice, $S) {
+    if ($Notice.desktopApp -eq $true) {
+        return @{ Label = $S.openClaude; Tip = ($S.openClaudeTip -f (Format-SessionLine ([string]$Notice.cwd) ([string]$Notice.title))) }
+    }
+    $label = switch ([string]$Notice.kind) {
+        'terminal' { $S.goToTerminal }
+        'other' { $S.goToWindow }
+        default { $S.goToVsCode }
+    }
+    return @{ Label = $label; Tip = $null }
+}
+
 # Lines of text, with Windows or Unix line endings; an empty text has none
 function Split-TextLines([string]$Text) {
     if (-not $Text) { return @() }
