@@ -1312,8 +1312,8 @@ try {
     $TelegramScript = Join-Path $PSScriptRoot 'telegram.ps1'
     # Alerts that become due within this time of the first one go out as one message
     $TgBatchMs = 5000
-    $script:tgCall = $null       # the call running: @{ kind (send|edit); call; token; and for a send keys, entries, text, files, tries }
-    $script:tgRetry = $null      # a send that failed once, tried again on the next round
+    $script:tgCall = $null       # the call running: @{ kind (send|edit); call; token; and for a send alertKeys, entries, text, files, tries }
+    $script:tgRetry = $null      # a send that failed in a way that may pass, tried again on the next round
     $script:tgBatchSince = 0     # when the first alert of the batch being collected became due
 
     # Calls a telegram.ps1 function in a runspace of its own. PowerShell classes (TelegramError) do not cross
@@ -1354,8 +1354,9 @@ try {
         $script:tgCall = $Job
     }
 
-    # A call ended. A delivered batch keeps its message id (for the resolved edit) and its outbox files go. A failed
-    # send is tried once more on the next round, then logged and dropped: its keys stay, so it never goes out late.
+    # A call ended. A delivered batch keeps its message id (for the resolved edit) and its outbox files go. A send
+    # that failed in a way that may pass (Test-TelegramRetryable) is tried once more on the next round; otherwise,
+    # or after that, it is logged and dropped: its keys stay, so it never goes out late.
     function Complete-TelegramCall {
         $job = $script:tgCall
         $script:tgCall = $null
@@ -1366,14 +1367,14 @@ try {
         }
         if ($r.ok) {
             $sent = Read-SentAlerts $Data
-            foreach ($k in $job.keys) {
+            foreach ($k in $job.alertKeys) {
                 $e = $job.entries[$k]
                 $e.message = [int64]$r.result
                 $sent[$k] = $e
             }
             if (-not (Save-SentAlerts $Data $sent)) { Write-Log 'telegram: could not save telegram-sent.json' }
         }
-        elseif ($job.tries -lt 2) { $job.tries++; $script:tgRetry = $job; return }
+        elseif ($job.tries -lt 2 -and (Test-TelegramRetryable ([int]$r.status))) { $job.tries++; $script:tgRetry = $job; return }
         else { Write-TelegramFailure $r $job.token }
         foreach ($f in $job.files) { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue }
     }
@@ -1413,7 +1414,11 @@ try {
         $waits = @(Select-UnseenAlerts @(Read-AlertFiles $Queue 'wait') $seen)
         $notices = @(Select-UnseenAlerts @(Get-Done) $seen)
         $away = (Get-IdleSeconds) -ge $AwaySecs
-        $due = @(Get-DueAlerts $outbox $notices $waits $sent $now ([int64]$script:prefs.notifyAfter * 60000) $away (Test-Dnd $Data))
+        $afterMs = [int64]$script:prefs.notifyAfter * 60000
+        # Notices are deleted at $DoneMaxAgeMs: with X = 5 min one would be gone before it alerts, so it is due 15 s
+        # earlier (room for the batch window and the 2 s rounds)
+        $noticeAfterMs = [math]::Min($afterMs, [int64]$DoneMaxAgeMs - 15000)
+        $due = @(Get-DueAlerts $outbox $notices $waits $sent $now $afterMs $away (Test-Dnd $Data) -NoticeAfterMs $noticeAfterMs)
 
         if ($due.Count -eq 0) { $script:tgBatchSince = 0 }
         elseif ($script:tgBatchSince -eq 0) { $script:tgBatchSince = $now }
@@ -1427,7 +1432,7 @@ try {
                 $job.entries[$a.key] = $entry
                 $sent[$a.key] = $entry
             }
-            $job.keys = @($job.entries.Keys)
+            $job.alertKeys = @($job.entries.Keys)
             # Recorded first: what could not be recorded is not sent (a restart would send it again)
             if (-not (Save-SentAlerts $Data $sent)) { Write-Log 'telegram: could not save telegram-sent.json'; return }
             $job.files = @($outbox | Where-Object { $job.entries.ContainsKey("req:$($_.id)") } | ForEach-Object { $_.file })
@@ -1443,7 +1448,7 @@ try {
         $cfg = Read-TelegramConfig $Data
         if (-not $cfg) { Write-Log 'telegram: cannot read telegram.json'; return }
         # Marked first, like a send: an edit is tried once, never in a loop
-        foreach ($k in $edit.keys) { $sent[$k].edited = $true }
+        foreach ($k in $edit.alertKeys) { $sent[$k].edited = $true }
         if (-not (Save-SentAlerts $Data $sent)) { Write-Log 'telegram: could not save telegram-sent.json'; return }
         $script:tgCall = @{ kind = 'edit'; token = $cfg.token
             call = Start-TelegramCall 'Edit-TelegramText' @($cfg.token, $cfg.chat, $edit.message, (Format-ResolvedText $edit.text $S.tgResolved)) }

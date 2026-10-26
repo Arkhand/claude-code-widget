@@ -628,8 +628,11 @@ function Set-SessionSeen([string]$Queue, [string]$Session) {
 # results, $Waits are wait-*.json markers, $Sent is the table of Read-SentAlerts. Each result is a hashtable:
 # key (what goes into $Sent), source (req|done|wait), kind (permission|question|plan|done), session, cwd,
 # title, detail, created, reason.
+# $NoticeAfterMs (default $AfterMs) is the age at which a notice is due: the widget deletes notices after 5 minutes,
+# so with X = 5 it passes a little less, or a notice would be gone before it could ever alert.
 # This does not check that Telegram is connected: the caller only asks when it is.
-function Get-DueAlerts($Outbox, $Notices, $Waits, $Sent, [int64]$NowMs, [int64]$AfterMs, [bool]$Away, [bool]$Dnd) {
+function Get-DueAlerts($Outbox, $Notices, $Waits, $Sent, [int64]$NowMs, [int64]$AfterMs, [bool]$Away, [bool]$Dnd, [int64]$NoticeAfterMs = -1) {
+    if (-not $PSBoundParameters.ContainsKey('NoticeAfterMs')) { $NoticeAfterMs = $AfterMs }
     $sentKeys = if ($Sent -is [hashtable]) { $Sent } else { @{} }
     $due = New-Object System.Collections.ArrayList
 
@@ -650,7 +653,7 @@ function Get-DueAlerts($Outbox, $Notices, $Waits, $Sent, [int64]$NowMs, [int64]$
     foreach ($n in @($Notices)) {
         if (-not $n) { continue }
         $created = [int64]$n.created
-        if ($created -le 0 -or ($NowMs - $created) -lt $AfterMs) { continue }
+        if ($created -le 0 -or ($NowMs - $created) -lt $NoticeAfterMs) { continue }
         if (([bool]$n.desktopApp -or $Dnd) -and -not $Away) { continue }
         $key = "done:$($n.key)"
         if ($sentKeys.ContainsKey($key)) { continue }
@@ -814,7 +817,7 @@ function Update-ResolvedAlerts([hashtable]$Sent, [hashtable]$Seen, [hashtable]$C
 }
 
 # The next Telegram message to edit to "resolved": one whose alerts (a batch shares one message) are all resolved
-# and that was not edited yet. @{ message; text; keys } or $null. Alerts never delivered (no message id) or saved
+# and that was not edited yet. @{ message; text; alertKeys } or $null. Alerts never delivered (no message id) or saved
 # without their text cannot be edited.
 function Get-ResolvedEdit([hashtable]$Sent) {
     $byMessage = @{}
@@ -829,9 +832,16 @@ function Get-ResolvedEdit([hashtable]$Sent) {
         $keys = @($byMessage[$m])
         $entries = @($keys | ForEach-Object { $Sent[$_] })
         if (@($entries | Where-Object { $_.edited -or -not $_.resolved }).Count -gt 0) { continue }
-        return @{ message = [int64]$entries[0].message; text = [string]$entries[0].text; keys = $keys }
+        return @{ message = [int64]$entries[0].message; text = [string]$entries[0].text; alertKeys = $keys }
     }
     return $null
+}
+
+# Is a failed Bot API call worth one more try? Only failures that may pass next time: no answer (0; the message
+# may have arrived, so a retry can send it twice, accepted once), too many requests (429) and server errors (5xx).
+# Any other 4xx (bad token, blocked bot, bad request) fails the same way again.
+function Test-TelegramRetryable([int]$Status) {
+    return ($Status -eq 0 -or $Status -eq 429 -or ($Status -ge 500 -and $Status -le 599))
 }
 
 # A sent message's text with the resolved mark after a blank line, cut to stay within Telegram's 4096 characters

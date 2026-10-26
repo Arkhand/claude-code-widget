@@ -1036,6 +1036,15 @@ Describe 'Get-DueAlerts' {
             $n.message = 'Which one?'
             (Get-Due -Notices @($n))[0].detail | Should -BeExactly 'Which one?'
         }
+        It 'NoticeAfterMs sets when notices are due (notifyAfter 5, notices expire at 5): <age> s -> <count>' -ForEach @(
+            @{ age = 286; count = 1 }, @{ age = 284; count = 0 }) {
+            $n = New-Notice ($script:Now - $age * 1000)
+            @(Get-DueAlerts @() @($n) @() @{} $script:Now 300000 $false $false -NoticeAfterMs 285000).Count | Should -Be $count
+        }
+        It 'NoticeAfterMs does not change outbox entries or wait markers' {
+            $w = New-Wait 'w1' ($script:Now - 286000)
+            @(Get-DueAlerts @() @() @($w) @{} $script:Now 300000 $true $false -NoticeAfterMs 285000).Count | Should -Be 0
+        }
     }
 
     Context 'waiting in VS Code' {
@@ -1269,6 +1278,16 @@ Describe 'ConvertTo-AwaySecs' {
     }
 }
 
+Describe 'Test-TelegramRetryable' {
+    # A retry can send twice (a timeout may have been delivered), so only failures that may pass next time qualify
+    It 'retries status <status>' -ForEach @(@{ status = 0 }, @{ status = 429 }, @{ status = 500 }, @{ status = 502 }, @{ status = 503 }) {
+        Test-TelegramRetryable $status | Should -BeTrue
+    }
+    It 'does not retry status <status>' -ForEach @(@{ status = 400 }, @{ status = 401 }, @{ status = 403 }, @{ status = 404 }, @{ status = 200 }) {
+        Test-TelegramRetryable $status | Should -BeFalse
+    }
+}
+
 Describe 'Get-IdleSeconds' {
     It 'returns the seconds since the last input as a non-negative number' {
         $s = Get-IdleSeconds
@@ -1351,8 +1370,8 @@ Describe 'Telegram sender helpers' {
             $e = Get-ResolvedEdit $sent
             $e.message | Should -Be 7
             $e.text | Should -BeExactly 'Batch'
-            @($e.keys | Sort-Object) -join ',' | Should -BeExactly 'req:a,req:b'
-            foreach ($k in $e.keys) { $sent[$k].edited = $true }
+            @($e.alertKeys | Sort-Object) -join ',' | Should -BeExactly 'req:a,req:b'
+            foreach ($k in $e.alertKeys) { $sent[$k].edited = $true }
             Get-ResolvedEdit $sent | Should -BeNullOrEmpty
         }
         It 'Get-ResolvedEdit waits until every alert of a batch is resolved' {

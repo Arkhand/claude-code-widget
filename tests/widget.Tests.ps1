@@ -449,13 +449,13 @@ Describe 'widget.ps1 Telegram alerts' -Tag 'Desktop' {
     BeforeAll {
         . (Join-Path $PSScriptRoot 'helpers\FakeTelegram.ps1')
         $script:Token = '123456:TEST-token-never-real'
-        # A sandbox data dir with Telegram connected and on, alerts after 1 minute, no sounds; the widget sits in
-        # the top-left corner so nobody mistakes a test card for a real one
-        function New-TgSandbox([string]$AwaySecs = '100000') {
+        # A sandbox data dir with Telegram connected and on, alerts after 1 minute (unless told otherwise), no sounds;
+        # the widget sits in the top-left corner so nobody mistakes a test card for a real one
+        function New-TgSandbox([string]$AwaySecs = '100000', [int]$NotifyAfter = 1) {
             $data = Join-Path ([IO.Path]::GetTempPath()) ('ccw-widget-' + [guid]::NewGuid().ToString('N'))
             New-Item -ItemType Directory -Path (Join-Path $data 'queue') | Out-Null
             [IO.File]::WriteAllText((Join-Path $data 'state.json'), '{"right":520,"bottom":330}')
-            [IO.File]::WriteAllText((Join-Path $data 'prefs.json'), '{"telegram":true,"notifyAfter":1,"volume":0}')
+            [IO.File]::WriteAllText((Join-Path $data 'prefs.json'), ('{"telegram":true,"notifyAfter":' + $NotifyAfter + ',"volume":0}'))
             Save-TelegramConfig $data $script:Token '4242' 'testbot' 'Tester' | Should -BeTrue
             Set-TgAwaySecs $data $AwaySecs
             return $data
@@ -605,7 +605,7 @@ Describe 'widget.ps1 Telegram alerts' -Tag 'Desktop' {
         $grew | Should -BeTrue
     }
 
-    It 'logs a failed send without the token' {
+    It 'logs a failed send without the token, and does not retry a refusal' {
         $fake.Replies['sendMessage'] = @{ status = 403; body = '{"ok":false,"error_code":403,"description":"Forbidden: bot was blocked by the user"}' }
         $data = New-TgSandbox
         $queue = Join-Path $data 'queue'
@@ -614,10 +614,53 @@ Describe 'widget.ps1 Telegram alerts' -Tag 'Desktop' {
         $log = Join-Path $data 'widget.log'
         (Wait-Until { (Test-Path -LiteralPath $log) -and ([IO.File]::ReadAllText($log) -like '*telegram: 403*') }) | Should -BeTrue
         Start-Sleep -Seconds 8
-        (Get-TgCalls $fake 'sendMessage').Count | Should -Be 2
+        (Get-TgCalls $fake 'sendMessage').Count | Should -Be 1
         $text = [IO.File]::ReadAllText($log)
         $text | Should -BeLike '*telegram: 403 Forbidden: bot was blocked by the user*'
         $text.Contains($script:Token) | Should -BeFalse
         @(Get-ChildItem -LiteralPath $queue -Filter 'tg-*.json').Count | Should -Be 0
+    }
+
+    It 'retries a server error once, then logs it' {
+        $fake.Replies['sendMessage'] = @{ status = 500; body = '{"ok":false,"error_code":500,"description":"Internal Server Error"}' }
+        $data = New-TgSandbox
+        $queue = Join-Path $data 'queue'
+        [void](Add-AlertOutbox $queue @{ kind = 'permission'; session = 's1'; cwd = 'C:\dev\alpha'; detail = 'Bash: npm test'; reason = 'timeout' })
+        $proc = Start-TgWidget $data $fake.Url
+        $log = Join-Path $data 'widget.log'
+        (Wait-Until { (Test-Path -LiteralPath $log) -and ([IO.File]::ReadAllText($log) -like '*telegram: 500*') }) | Should -BeTrue
+        Start-Sleep -Seconds 8
+        (Get-TgCalls $fake 'sendMessage').Count | Should -Be 2
+        @(Get-ChildItem -LiteralPath $queue -Filter 'tg-*.json').Count | Should -Be 0
+    }
+
+    It 'sends a finished alert at the default 5 minutes, before the notice expires' {
+        $data = New-TgSandbox -NotifyAfter 5
+        $queue = Join-Path $data 'queue'
+        $proc = Start-TgWidget $data $fake.Url
+        (Wait-Until { Test-Path -LiteralPath (Join-Path $data 'widget.json') }) | Should -BeTrue
+        Start-Sleep -Seconds 2
+        # 4 min 40 s old: it expires (5 min) in 20 s, so the alert has to go out before that
+        $created = (Get-NowMs) - 280000
+        $file = Join-Path $queue "done-s1-$created.json"
+        Write-JsonAtomic $file ([ordered]@{ session = 's1'; created = $created; cwd = 'C:\dev\alpha'
+                message = 'All tests pass'; hwnd = 0; kind = 'vscode'; title = ''; desktopApp = $false })
+        (Wait-Until { (Get-TgCalls $fake 'sendMessage').Count -ge 1 } 25) | Should -BeTrue
+        ((Get-TgCalls $fake 'sendMessage')[0].body | ConvertFrom-Json).text | Should -BeLike '*All tests pass*'
+        ((Get-NowMs) - $created) | Should -BeLessThan 300000
+    }
+
+    It 'sends while do not disturb hides the widget' {
+        $data = New-TgSandbox '0'
+        $queue = Join-Path $data 'queue'
+        Set-Dnd $data $true
+        # With do not disturb a finished notice alerts only when you are away (AWAY_SECS 0: always)
+        $created = (Get-NowMs) - 2 * 60000
+        Write-JsonAtomic (Join-Path $queue "done-s1-$created.json") ([ordered]@{ session = 's1'; created = $created; cwd = 'C:\dev\alpha'
+                message = 'Done while hidden'; hwnd = 0; kind = 'vscode'; title = ''; desktopApp = $false })
+        $proc = Start-TgWidget $data $fake.Url
+        (Wait-Until { (Get-TgCalls $fake 'sendMessage').Count -ge 1 }) | Should -BeTrue
+        @([CcwTest.Windows]::Rects($proc.Id)).Count | Should -Be 0
+        ((Get-TgCalls $fake 'sendMessage')[0].body | ConvertFrom-Json).text | Should -BeLike '*Done while hidden*'
     }
 }
