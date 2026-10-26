@@ -114,7 +114,7 @@ Off until you connect it. When something waits and you are not looking, the widg
 **Connect it** from the widget: right-click → **Telegram** → **Connect Telegram…**. A card walks you through 3 steps:
 
 1. **Create your bot.** The **Open BotFather** button opens it in Telegram. Send `/newbot`, pick a name, copy the token and paste it in the widget.
-2. **Tell your bot it's you.** Press **Open my bot in Telegram** and then Start. The widget finds your chat by itself with a one-time code, so you never look up a chat id, and nobody else who writes to the bot can take your place.
+2. **Tell your bot it's you.** Press **Open my bot in Telegram** and then Start. The widget finds your chat by itself with a one-time code, so you never look up a chat id, and nobody else who writes to the bot can take your place. No Telegram on this PC? The card also shows the `/start` message to send to your bot from your phone.
 3. **Connected.** The widget sends a test message and turns **Alerts on**.
 
 A bot that already has a webhook (or another program reading its messages) cannot be used: create a new one with `/newbot`.

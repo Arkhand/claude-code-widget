@@ -160,7 +160,7 @@ try {
         'QList', 'BtnAnswer', 'BtnQVs',
         'PanelTelegram', 'TgStepOf', 'TgSetupTitle', 'TgStepToken', 'TgStepStart', 'TgStepDone', 'TgStep1Title', 'TgHowTo1', 'TgHowTo2',
         'TgHowTo3', 'TgHowTo4', 'TgOpenBotFather', 'TgToken', 'TgStep2Title', 'TgBotFound', 'TgStep2Text', 'TgWaitDot', 'TgWaiting',
-        'TgStep3Title', 'TgStep3Text', 'TgError', 'TgNext', 'TgOpenBot', 'TgFinish', 'TgCancel') {
+        'TgStep3Title', 'TgStep3Text', 'TgError', 'TgNext', 'TgOpenBot', 'TgFinish', 'TgCancel', 'TgPhoneHint') {
         $ui[$n] = $win.FindName($n)
     }
 
@@ -1357,6 +1357,7 @@ try {
         $ui.TgStepDone.Visibility = if ($st.step -eq 'done') { 'Visible' } else { 'Collapsed' }
         $ui.TgNext.Visibility = $ui.TgStepToken.Visibility
         $ui.TgOpenBot.Visibility = $ui.TgStepStart.Visibility
+        $ui.TgPhoneHint.Visibility = $ui.TgStepStart.Visibility
         $ui.TgFinish.Visibility = $ui.TgStepDone.Visibility
         $ui.TgCancel.Visibility = if ($st.step -ne 'done') { 'Visible' } else { 'Collapsed' }
         $ui.TgNext.Content = if ($st.busy) { $S.tgChecking } else { $S.tgNext }
@@ -1367,6 +1368,7 @@ try {
         $ui.TgError.Visibility = if ($st.error) { 'Visible' } else { 'Collapsed' }
         if ($st.step -eq 'start') {
             $ui.TgBotFound.Text = $S.tgBotFound -f $st.bot
+            $ui.TgPhoneHint.Text = $S.tgPhoneHint -f $st.code, $st.bot
             # Where the button goes (only when it changed: replacing an open tooltip would close it)
             $link = Get-SetupLink
             if ($ui.TgOpenBot.ToolTip -ne $link) { $ui.TgOpenBot.ToolTip = $link }

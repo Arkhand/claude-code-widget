@@ -81,6 +81,11 @@ Describe 'Get-Strings' {
         $en.Count | Should -BeGreaterThan 0
         ($other -join ',') | Should -BeExactly ($en -join ',')
     }
+    It 'the phone hint of the setup names the /start code and the bot in <lang>' -ForEach @(@{ lang = 'pt' }, @{ lang = 'en' }, @{ lang = 'es' }) {
+        $t = (Get-Strings $lang).tgPhoneHint -f '3f9a1c07b2e4d856', 'testbot'
+        $t | Should -BeLike '*/start 3f9a1c07b2e4d856*'
+        $t | Should -BeLike '*@testbot*'
+    }
     It 'reads strings.json as UTF-8' {
         (Get-Strings 'pt').deniedMessage | Should -Match ([string][char]0x00E1)
     }

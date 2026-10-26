@@ -213,6 +213,8 @@
           <Button x:Name="TgFinish" Style="{StaticResource Btn}" Background="#D97757" BorderBrush="#D97757" DockPanel.Dock="Left" Visibility="Collapsed"/>
           <Button x:Name="TgCancel" Style="{StaticResource Btn}" Background="#2A2A30" BorderBrush="#3A3A42" Foreground="#C8C8D0" DockPanel.Dock="Right"/>
         </DockPanel>
+        <!-- Step 2 only: the code written out, for whoever has Telegram only on the phone -->
+        <TextBlock x:Name="TgPhoneHint" Foreground="#7E7E88" FontSize="12" TextWrapping="Wrap" Margin="2,10,0,0" Visibility="Collapsed"/>
       </StackPanel>
 
       <!-- "Finished" notices, one box each, stacked. DoneItem is only a template: widget.ps1 takes it

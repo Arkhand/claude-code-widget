@@ -1051,6 +1051,8 @@ Describe 'widget.ps1 Telegram alerts' -Tag 'Desktop' {
             $data = New-TgSandbox -NotConnected
             $proc = Start-ShownTgWidget $data
             $code = Get-TgStartCode $proc
+            # Without Telegram on this PC: the code and the bot are written out, to type them on the phone
+            (Find-WidgetElement $proc -Name ($S.tgPhoneHint -f $code, 'testbot')) | Should -Not -BeNullOrEmpty
             $fake.Replies['getUpdates'] = New-StartUpdates @('0123456789abcdef')
             $polls = (Get-TgCalls $fake 'getUpdates').Count
             (Wait-Until { (Get-TgCalls $fake 'getUpdates').Count -ge $polls + 2 } 15) | Should -BeTrue

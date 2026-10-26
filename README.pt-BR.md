@@ -114,7 +114,7 @@ Desligados até você conectar. Quando algo espera e você não está olhando, o
 **Conecte** pelo widget: botão direito → **Telegram** → **Conectar o Telegram…**. Um cartão guia você em 3 passos:
 
 1. **Crie o seu bot.** O botão **Abrir o BotFather** abre o BotFather no Telegram. Envie `/newbot`, escolha um nome, copie o token e cole no widget.
-2. **Diga ao seu bot que é você.** Clique em **Abrir meu bot no Telegram** e toque em Iniciar. O widget encontra o seu chat sozinho com um código de uso único, então você nunca procura um chat id, e ninguém que escreva para o bot consegue tomar o seu lugar.
+2. **Diga ao seu bot que é você.** Clique em **Abrir meu bot no Telegram** e toque em Iniciar. O widget encontra o seu chat sozinho com um código de uso único, então você nunca procura um chat id, e ninguém que escreva para o bot consegue tomar o seu lugar. Sem Telegram neste PC? O cartão também mostra a mensagem `/start` para enviar ao seu bot pelo celular.
 3. **Conectado.** O widget manda uma mensagem de teste e liga os **Alertas**.
 
 Um bot que já tem um webhook (ou outro programa lendo as mensagens dele) não serve: crie um novo com `/newbot`.
