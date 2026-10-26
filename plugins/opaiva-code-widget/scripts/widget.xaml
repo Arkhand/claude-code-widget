@@ -148,6 +148,73 @@
         </DockPanel>
       </StackPanel>
 
+      <!-- Connecting Telegram: one step shown at a time (widget.ps1, "Connecting Telegram") -->
+      <StackPanel x:Name="PanelTelegram" Width="400" Margin="20,16,20,18" Visibility="Collapsed">
+        <DockPanel Margin="0,0,0,14">
+          <TextBlock x:Name="TgStepOf" DockPanel.Dock="Right" Foreground="#7E7E88" FontSize="12" VerticalAlignment="Center"/>
+          <Ellipse Width="10" Height="10" Fill="#7AA2F7" VerticalAlignment="Center" Margin="0,0,10,0"/>
+          <TextBlock x:Name="TgSetupTitle" Foreground="#F4F4F6" FontSize="14.5" FontWeight="SemiBold" VerticalAlignment="Center"/>
+        </DockPanel>
+
+        <StackPanel x:Name="TgStepToken">
+          <TextBlock x:Name="TgStep1Title" Foreground="#DADAE0" FontSize="13.5" FontWeight="SemiBold" Margin="0,0,0,8"/>
+          <Grid Margin="0,0,0,4">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="20"/><ColumnDefinition/></Grid.ColumnDefinitions>
+            <TextBlock Text="1." Foreground="#7E7E88" FontSize="13"/>
+            <TextBlock x:Name="TgHowTo1" Grid.Column="1" Foreground="#C8C8D0" FontSize="13" TextWrapping="Wrap"/>
+          </Grid>
+          <Grid Margin="0,0,0,4">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="20"/><ColumnDefinition/></Grid.ColumnDefinitions>
+            <TextBlock Text="2." Foreground="#7E7E88" FontSize="13"/>
+            <TextBlock x:Name="TgHowTo2" Grid.Column="1" Foreground="#C8C8D0" FontSize="13" TextWrapping="Wrap"/>
+          </Grid>
+          <Grid Margin="0,0,0,4">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="20"/><ColumnDefinition/></Grid.ColumnDefinitions>
+            <TextBlock Text="3." Foreground="#7E7E88" FontSize="13"/>
+            <TextBlock x:Name="TgHowTo3" Grid.Column="1" Foreground="#C8C8D0" FontSize="13" TextWrapping="Wrap"/>
+          </Grid>
+          <Grid Margin="0,0,0,12">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="20"/><ColumnDefinition/></Grid.ColumnDefinitions>
+            <TextBlock Text="4." Foreground="#7E7E88" FontSize="13"/>
+            <TextBlock x:Name="TgHowTo4" Grid.Column="1" Foreground="#C8C8D0" FontSize="13" TextWrapping="Wrap"/>
+          </Grid>
+          <Button x:Name="TgOpenBotFather" Style="{StaticResource Btn}" Height="32" HorizontalAlignment="Left" Margin="0,0,0,12"
+                  Background="#2A2A30" BorderBrush="#3A3A42" Foreground="#C8C8D0"/>
+          <TextBox x:Name="TgToken" Background="#141417" Foreground="#E8E8EC" CaretBrush="#E8E8EC" BorderBrush="#2C2C33"
+                   SelectionBrush="#D97757" Padding="8,6" FontFamily="Cascadia Mono, Consolas" FontSize="12.5"/>
+        </StackPanel>
+
+        <StackPanel x:Name="TgStepStart" Visibility="Collapsed">
+          <TextBlock x:Name="TgStep2Title" Foreground="#DADAE0" FontSize="13.5" FontWeight="SemiBold" Margin="0,0,0,8"/>
+          <TextBlock x:Name="TgBotFound" Foreground="#C8C8D0" FontSize="13" Margin="0,0,0,4"/>
+          <TextBlock x:Name="TgStep2Text" Foreground="#C8C8D0" FontSize="13" TextWrapping="Wrap" Margin="0,0,0,12"/>
+          <StackPanel Orientation="Horizontal">
+            <Ellipse x:Name="TgWaitDot" Width="8" Height="8" Fill="#7AA2F7" VerticalAlignment="Center" Margin="0,0,9,0"/>
+            <TextBlock x:Name="TgWaiting" Foreground="#7E7E88" FontSize="12.5" VerticalAlignment="Center"/>
+          </StackPanel>
+        </StackPanel>
+
+        <StackPanel x:Name="TgStepDone" Visibility="Collapsed">
+          <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+            <Border Width="18" Height="18" CornerRadius="9" Background="#2F6F4E" VerticalAlignment="Center" Margin="0,0,9,0">
+              <TextBlock Text="&#10003;" Foreground="#FFFFFF" FontSize="11" FontWeight="Bold"
+                         HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Border>
+            <TextBlock x:Name="TgStep3Title" Foreground="#DADAE0" FontSize="13.5" FontWeight="SemiBold" VerticalAlignment="Center"/>
+          </StackPanel>
+          <TextBlock x:Name="TgStep3Text" Foreground="#C8C8D0" FontSize="13" TextWrapping="Wrap"/>
+        </StackPanel>
+
+        <TextBlock x:Name="TgError" Foreground="#F29090" FontSize="12" TextWrapping="Wrap" Margin="2,8,0,0" Visibility="Collapsed"/>
+
+        <DockPanel Margin="0,16,0,0" LastChildFill="False">
+          <Button x:Name="TgNext" Style="{StaticResource Btn}" Background="#D97757" BorderBrush="#D97757" DockPanel.Dock="Left"/>
+          <Button x:Name="TgOpenBot" Style="{StaticResource Btn}" Background="#D97757" BorderBrush="#D97757" DockPanel.Dock="Left" Visibility="Collapsed"/>
+          <Button x:Name="TgFinish" Style="{StaticResource Btn}" Background="#D97757" BorderBrush="#D97757" DockPanel.Dock="Left" Visibility="Collapsed"/>
+          <Button x:Name="TgCancel" Style="{StaticResource Btn}" Background="#2A2A30" BorderBrush="#3A3A42" Foreground="#C8C8D0" DockPanel.Dock="Right"/>
+        </DockPanel>
+      </StackPanel>
+
       <!-- "Finished" notices, one box each, stacked. DoneItem is only a template: widget.ps1 takes it
            out before loading this file and builds one copy per notice (the Card itself goes see-through). -->
       <StackPanel x:Name="DonePanel" Margin="0,0,0,-8" Visibility="Collapsed">

@@ -119,6 +119,11 @@
           "directories": []
         }
       ]
+    },
+    "telegram": {
+      "token": "7351942086:AAHq3vX9Lk2mPz8RtYw4bN6cD1eF5gJ0sUo",
+      "bot": "my_claude_alerts_bot",
+      "name": "Alex"
     }
   },
   "pt": {
@@ -241,6 +246,11 @@
           "directories": []
         }
       ]
+    },
+    "telegram": {
+      "token": "7351942086:AAHq3vX9Lk2mPz8RtYw4bN6cD1eF5gJ0sUo",
+      "bot": "my_claude_alerts_bot",
+      "name": "Ana"
     }
   }
 }

@@ -134,6 +134,15 @@ namespace CcwTest {
         }
         return $best
     }
+    # Waits for the widget window: widget.json first (written before the window), since powershell.exe can flash its
+    # hidden console window at start, then 2 s for the layout to settle
+    function Wait-WidgetShown($Proc, [string]$Data) {
+        $deadline = (Get-Date).AddSeconds(30)
+        while ((Get-Date) -lt $deadline -and -not (Test-Path -LiteralPath (Join-Path $Data 'widget.json'))) { Start-Sleep -Milliseconds 250 }
+        while ((Get-Date) -lt $deadline -and -not (Get-WidgetRect $Proc)) { Start-Sleep -Milliseconds 250 }
+        Start-Sleep -Seconds 2
+        return [bool](Get-WidgetRect $Proc)
+    }
     # Right-clicks the middle of the widget and waits for its menu (a second visible window) to open
     function Open-WidgetMenu($Proc) {
         $r = Get-WidgetRect $Proc
@@ -195,7 +204,7 @@ Describe 'widget.ps1 rendering' -Tag 'Desktop' {
         $out = Join-Path $TestDrive $lang
         & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $widget -RenderSamples $samples -OutDir $out -Lang $lang
         $LASTEXITCODE | Should -Be 0
-        foreach ($name in 'idle', 'sessions', 'permission', 'edit', 'question', 'done') {
+        foreach ($name in 'idle', 'sessions', 'permission', 'edit', 'question', 'done', 'telegram-token', 'telegram-start', 'telegram-done') {
             $png = Join-Path $out "$name.png"
             $png | Should -Exist
             (Get-Item -LiteralPath $png).Length | Should -BeGreaterThan 1024
@@ -609,9 +618,7 @@ Describe 'widget.ps1 right-click menu' -Tag 'Desktop' {
             $proc = Start-Process powershell.exe -PassThru -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
                 '-File', ('"{0}"' -f $widget), '-DataDir', ('"{0}"' -f $data), '-Lang', 'en',
                 '-SettingsPath', ('"{0}"' -f (Join-Path $data 'settings.json'))
-            $deadline = (Get-Date).AddSeconds(30)
-            while ((Get-Date) -lt $deadline -and -not (Get-WidgetRect $proc)) { Start-Sleep -Milliseconds 250 }
-            Start-Sleep -Seconds 2
+            Wait-WidgetShown $proc $data | Should -BeTrue
             Open-WidgetMenu $proc | Should -BeTrue
             # A click on another window, as on the desktop
             [CcwTest.Mouse]::Click([int]($form.Left + $form.Width / 2), [int]($form.Top + $form.Height / 2), $false)
@@ -656,12 +663,13 @@ Describe 'widget.ps1 Telegram alerts' -Tag 'Desktop' {
         $script:Token = '123456:TEST-token-never-real'
         # A sandbox data dir with Telegram connected and on, alerts after 1 minute (unless told otherwise), no sounds;
         # the widget sits in the top-left corner so nobody mistakes a test card for a real one
-        function New-TgSandbox([string]$AwaySecs = '100000', [int]$NotifyAfter = 1) {
+        # -NotConnected: no telegram.json and Telegram off
+        function New-TgSandbox([string]$AwaySecs = '100000', [int]$NotifyAfter = 1, [switch]$NotConnected) {
             $data = Join-Path ([IO.Path]::GetTempPath()) ('ccw-widget-' + [guid]::NewGuid().ToString('N'))
             New-Item -ItemType Directory -Path (Join-Path $data 'queue') | Out-Null
             [IO.File]::WriteAllText((Join-Path $data 'state.json'), '{"right":520,"bottom":330}')
-            [IO.File]::WriteAllText((Join-Path $data 'prefs.json'), ('{"telegram":true,"notifyAfter":' + $NotifyAfter + ',"volume":0}'))
-            Save-TelegramConfig $data $script:Token '4242' 'testbot' 'Tester' | Should -BeTrue
+            [IO.File]::WriteAllText((Join-Path $data 'prefs.json'), ('{"telegram":' + $(if ($NotConnected) { 'false' } else { 'true' }) + ',"notifyAfter":' + $NotifyAfter + ',"volume":0}'))
+            if (-not $NotConnected) { Save-TelegramConfig $data $script:Token '4242' 'testbot' 'Tester' | Should -BeTrue }
             Set-TgAwaySecs $data $AwaySecs
             return $data
         }
@@ -913,6 +921,194 @@ Describe 'widget.ps1 Telegram alerts' -Tag 'Desktop' {
         (Wait-Until { (Get-TgCalls $fake 'sendMessage').Count -ge 1 }) | Should -BeTrue
         @([CcwTest.Windows]::Rects($proc.Id)).Count | Should -Be 0
         ((Get-TgCalls $fake 'sendMessage')[0].body | ConvertFrom-Json).text | Should -BeLike '*Done while hidden*'
+    }
+
+    # The menu and the setup card, driven like a person would: a real right-click opens the menu, UI Automation
+    # picks its items and fills the token box. The fake Bot API stands in for Telegram.
+    Context 'menu and setup wizard' {
+        BeforeAll {
+            $script:S = Get-Strings 'en'
+            $script:GetMeOk = '{"ok":true,"result":{"id":555,"is_bot":true,"first_name":"Test bot","username":"testbot"}}'
+            $script:NoUpdates = '{"ok":true,"result":[]}'
+            # A getUpdates reply with one "/start <code>" message per code (update ids 1, 2, ...) from Alex, chat 999
+            function New-StartUpdates([string[]]$Codes) {
+                $i = 0
+                $result = @(foreach ($c in $Codes) {
+                        $i++
+                        [ordered]@{ update_id = $i; message = [ordered]@{ message_id = $i; from = @{ id = 999; first_name = 'Alex' }
+                                chat = [ordered]@{ id = 999; first_name = 'Alex'; type = 'private' }; text = "/start $c" } }
+                    })
+                return (@{ ok = $true; result = $result } | ConvertTo-Json -Depth 6 -Compress)
+            }
+            function Start-ShownTgWidget([string]$Data) {
+                $p = Start-TgWidget $Data $fake.Url
+                Wait-WidgetShown $p $Data | Should -BeTrue
+                return $p
+            }
+            # Right-click > Telegram: the submenu, rebuilt as it opens
+            function Open-TgMenu($Proc) {
+                Open-WidgetMenu $Proc | Should -BeTrue
+                $tg = Wait-WidgetElement $Proc -Name $S.menuTelegram
+                $tg | Should -Not -BeNullOrEmpty
+                Expand-WidgetElement $tg
+                Start-Sleep -Milliseconds 500
+            }
+            # Right-click > Telegram > Connect Telegram...: step 1 of the setup card
+            function Start-TgSetup($Proc) {
+                Open-TgMenu $Proc
+                Invoke-WidgetElement (Wait-WidgetElement $Proc -Name $S.tgConnect)
+                (Wait-WidgetElement $Proc -Id 'TgToken') | Should -Not -BeNullOrEmpty
+            }
+            function Submit-TgToken($Proc, [string]$Text) {
+                $box = Wait-WidgetElement $Proc -Id 'TgToken'
+                $box.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue($Text)
+                Invoke-WidgetElement (Wait-WidgetElement $Proc -Id 'TgNext')
+            }
+            # Steps 1 and 2 with a good token; returns the one-time code of the "Open my bot" link
+            function Get-TgStartCode($Proc) {
+                Start-TgSetup $Proc
+                Submit-TgToken $Proc $script:Token
+                $btn = Wait-WidgetElement $Proc -Id 'TgOpenBot'
+                $btn | Should -Not -BeNullOrEmpty
+                $link = $btn.Current.HelpText
+                $link | Should -Match '^https://t\.me/testbot\?start=[0-9a-f]{16}$'
+                return ($link -split '=')[-1]
+            }
+        }
+        BeforeEach {
+            $fake.Replies['getMe'] = $script:GetMeOk
+            $fake.Replies['getUpdates'] = $script:NoUpdates
+            $cursor = [CcwTest.Mouse]::Position()
+        }
+        AfterEach { [CcwTest.Mouse]::MoveTo($cursor[0], $cursor[1]) }
+
+        It 'menu shows Connect when not connected' {
+            $data = New-TgSandbox -NotConnected
+            $proc = Start-ShownTgWidget $data
+            Open-TgMenu $proc
+            (Wait-WidgetElement $proc -Name $S.tgConnect) | Should -Not -BeNullOrEmpty
+            (Find-WidgetElement $proc -Name $S.menuClose) | Should -Not -BeNullOrEmpty
+            (Find-WidgetElement $proc -Name $S.tgConnectCaption) | Should -Not -BeNullOrEmpty
+            (Find-WidgetElement $proc -Name $S.tgDisconnect) | Should -BeNullOrEmpty
+            Join-Path $data 'widget.log' | Should -Not -Exist
+        }
+
+        It 'menu shows the connected items with the bot name' {
+            $data = New-TgSandbox
+            $proc = Start-ShownTgWidget $data
+            Open-TgMenu $proc
+            (Wait-WidgetElement $proc -Name $S.tgDisconnect) | Should -Not -BeNullOrEmpty
+            foreach ($name in $S.tgAlertsOn, $S.menuAlertAfter, $S.tgSendTest, ($S.tgConnectedTo -f 'testbot')) {
+                (Find-WidgetElement $proc -Name $name) | Should -Not -BeNullOrEmpty -Because $name
+            }
+            (Find-WidgetElement $proc -Name $S.tgConnect) | Should -BeNullOrEmpty
+            Join-Path $data 'widget.log' | Should -Not -Exist
+        }
+
+        It 'a pasted token with spaces and a newline is trimmed and accepted' {
+            $data = New-TgSandbox -NotConnected
+            $proc = Start-ShownTgWidget $data
+            Start-TgSetup $proc
+            Submit-TgToken $proc ("  $script:Token `r`n")
+            (Wait-Until { (Get-TgCalls $fake 'getMe').Count -ge 1 } 10) | Should -BeTrue
+            (Get-TgCalls $fake 'getMe')[0].token | Should -BeExactly $script:Token
+            (Wait-WidgetElement $proc -Name ($S.tgBotFound -f 'testbot')) | Should -Not -BeNullOrEmpty
+            (Find-WidgetElement $proc -Id 'TgOpenBot') | Should -Not -BeNullOrEmpty
+            Join-Path $data 'telegram.json' | Should -Not -Exist
+        }
+
+        It 'a bad token stays on step 1 with an error' {
+            $fake.Replies['getMe'] = @{ status = 401; body = '{"ok":false,"error_code":401,"description":"Unauthorized"}' }
+            $data = New-TgSandbox -NotConnected
+            $proc = Start-ShownTgWidget $data
+            Start-TgSetup $proc
+            Submit-TgToken $proc '123:not-a-real-token'
+            (Wait-WidgetElement $proc -Name $S.tgErrBadToken) | Should -Not -BeNullOrEmpty
+            (Find-WidgetElement $proc -Id 'TgToken') | Should -Not -BeNullOrEmpty
+            (Find-WidgetElement $proc -Id 'TgOpenBot') | Should -BeNullOrEmpty
+            Join-Path $data 'telegram.json' | Should -Not -Exist
+        }
+
+        It '/start with the wrong code does not connect; the right one saves telegram.json and sends a test message' {
+            $data = New-TgSandbox -NotConnected
+            $proc = Start-ShownTgWidget $data
+            $code = Get-TgStartCode $proc
+            $fake.Replies['getUpdates'] = New-StartUpdates @('0123456789abcdef')
+            $polls = (Get-TgCalls $fake 'getUpdates').Count
+            (Wait-Until { (Get-TgCalls $fake 'getUpdates').Count -ge $polls + 2 } 15) | Should -BeTrue
+            Join-Path $data 'telegram.json' | Should -Not -Exist
+            (Get-TgCalls $fake 'sendMessage').Count | Should -Be 0
+
+            $fake.Replies['getUpdates'] = New-StartUpdates @('0123456789abcdef', $code)
+            (Wait-Until { Test-Path -LiteralPath (Join-Path $data 'telegram.json') } 15) | Should -BeTrue
+            $cfg = Read-TelegramConfig $data
+            $cfg.token | Should -BeExactly $script:Token
+            $cfg.chat | Should -BeExactly '999'
+            $cfg.bot | Should -BeExactly 'testbot'
+            $cfg.name | Should -BeExactly 'Alex'
+            (Read-Prefs $data).telegram | Should -BeTrue
+            (Wait-Until { (Get-TgCalls $fake 'sendMessage').Count -ge 1 } 10) | Should -BeTrue
+            $body = (Get-TgCalls $fake 'sendMessage')[0].body | ConvertFrom-Json
+            [string]$body.chat_id | Should -BeExactly '999'
+            $body.text | Should -BeExactly $S.tgTest
+            (Wait-WidgetElement $proc -Name ($S.tgStep3Title -f 'Alex')) | Should -Not -BeNullOrEmpty
+            (Find-WidgetElement $proc -Name ($S.tgStep3Text -f 1)) | Should -Not -BeNullOrEmpty
+            Invoke-WidgetElement (Wait-WidgetElement $proc -Id 'TgFinish')
+            (Wait-Until { -not (Find-WidgetElement $proc -Id 'TgFinish') } 5) | Should -BeTrue
+            (Get-TgCalls $fake 'sendMessage').Count | Should -Be 1
+            Join-Path $data 'widget.log' | Should -Not -Exist
+        }
+
+        It 'cancel saves nothing' {
+            $data = New-TgSandbox -NotConnected
+            $proc = Start-ShownTgWidget $data
+            $code = Get-TgStartCode $proc
+            Invoke-WidgetElement (Wait-WidgetElement $proc -Id 'TgCancel')
+            (Wait-Until { -not (Find-WidgetElement $proc -Id 'TgOpenBot') } 5) | Should -BeTrue
+            # The code arrives after the cancel: nothing is bound, and the polling has stopped
+            $fake.Replies['getUpdates'] = New-StartUpdates @($code)
+            Start-Sleep -Seconds 2
+            $polls = (Get-TgCalls $fake 'getUpdates').Count
+            Start-Sleep -Seconds 4
+            (Get-TgCalls $fake 'getUpdates').Count | Should -Be $polls
+            Join-Path $data 'telegram.json' | Should -Not -Exist
+            (Read-Prefs $data).telegram | Should -BeFalse
+            (Get-TgCalls $fake 'sendMessage').Count | Should -Be 0
+        }
+
+        It 'disconnect removes telegram.json' {
+            $data = New-TgSandbox
+            $proc = Start-ShownTgWidget $data
+            Open-TgMenu $proc
+            Invoke-WidgetElement (Wait-WidgetElement $proc -Name $S.tgDisconnect)
+            (Wait-Until { -not (Test-Path -LiteralPath (Join-Path $data 'telegram.json')) } 5) | Should -BeTrue
+            (Read-Prefs $data).telegram | Should -BeFalse
+            Join-Path $data 'widget.log' | Should -Not -Exist
+        }
+
+        It 'disconnect says so when telegram.json cannot be deleted' {
+            $data = New-TgSandbox
+            $proc = Start-ShownTgWidget $data
+            # Held open, shared for reading only: the menu can read it, Windows refuses the delete
+            $lock = [IO.File]::Open((Join-Path $data 'telegram.json'), 'Open', 'Read', 'Read')
+            try {
+                Open-TgMenu $proc
+                Invoke-WidgetElement (Wait-WidgetElement $proc -Name $S.tgDisconnect)
+                (Wait-WidgetElement $proc -Name $S.tgErrDisconnect) | Should -Not -BeNullOrEmpty
+            }
+            finally { $lock.Dispose() }
+            Join-Path $data 'telegram.json' | Should -Exist
+        }
+
+        It 'send test sends the test message and says it went out' {
+            $data = New-TgSandbox
+            $proc = Start-ShownTgWidget $data
+            Open-TgMenu $proc
+            Invoke-WidgetElement (Wait-WidgetElement $proc -Name $S.tgSendTest)
+            (Wait-Until { (Get-TgCalls $fake 'sendMessage').Count -ge 1 } 10) | Should -BeTrue
+            ((Get-TgCalls $fake 'sendMessage')[0].body | ConvertFrom-Json).text | Should -BeExactly $S.tgTest
+            (Wait-WidgetElement $proc -Name $S.tgTestOk) | Should -Not -BeNullOrEmpty
+        }
     }
 }
 

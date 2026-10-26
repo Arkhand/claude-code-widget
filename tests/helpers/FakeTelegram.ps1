@@ -1,7 +1,7 @@
 # A fake Telegram Bot API for the tests: a local HttpListener that answers POST /bot<token>/<method>.
 # Replies[method] is the JSON text to answer with (status 200) or @{ status; body; delayMs }.
 # A method without a reply gets 404, like Telegram does for unknown methods.
-# Requests records each call as @{ method; body (the request body decoded as UTF-8); contentType }.
+# Requests records each call as @{ method; token (from the URL); body (the request body decoded as UTF-8); contentType }.
 # getUpdates replies drop the updates below the request's offset, as Telegram drops confirmed ones.
 
 function Start-FakeTelegram {
@@ -26,9 +26,10 @@ function Start-FakeTelegram {
                     $body = $reader.ReadToEnd()
                     $reader.Close()
                     $method = ''
-                    if ($ctx.Request.Url.AbsolutePath -match '^/bot[^/]+/([^/]+)$') { $method = $Matches[1] }
+                    $token = ''
+                    if ($ctx.Request.Url.AbsolutePath -match '^/bot([^/]+)/([^/]+)$') { $token = [Uri]::UnescapeDataString($Matches[1]); $method = $Matches[2] }
                     # Recorded before answering, so a test that got its reply always sees its request
-                    [void]$requests.Add(@{ method = $method; body = $body; contentType = $ctx.Request.ContentType })
+                    [void]$requests.Add(@{ method = $method; token = $token; body = $body; contentType = $ctx.Request.ContentType })
                     $status = 200
                     $delay = 0
                     $reply = $replies[$method]
