@@ -1,11 +1,11 @@
 ---
 name: testing
-description: Cómo verificar cambios en este repo; Pester 5.5 no está instalado en la PC de Daniel
+description: Cómo verificar cambios en este repo (Pester 6.2, tests Desktop, validate)
 metadata:
   type: project
 ---
 
-- **En esta PC solo hay Pester 3.4.0** (el que trae Windows). `tools/test.ps1` exige ≥ 5.5 y sale con error. Instalar una vez (pedir OK a Daniel antes):
+- **Pester 6.2.0 instalado (CurrentUser) el 2026-10-25.** Si falta en otra PC, instalar con (requiere el proveedor NuGet):
   `Install-Module Pester -MinimumVersion 5.5 -Scope CurrentUser -Force -SkipPublisherCheck`
 - Correr todo: `powershell -NoProfile -File tools\test.ps1`
 - Sin tests que abren ventanas: `powershell -NoProfile -File tools\test.ps1 -ExcludeTag Desktop` (todos los `Describe` de `tests/widget.Tests.ps1` son `-Tag 'Desktop'`).
