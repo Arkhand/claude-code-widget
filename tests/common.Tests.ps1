@@ -1242,3 +1242,134 @@ Describe 'Read-SentAlerts / Save-SentAlerts' {
         try { Save-SentAlerts $script:Dir @{ 'a' = @{ at = (Get-NowMs) } } | Should -BeFalse } finally { $lock.Dispose() }
     }
 }
+
+Describe 'Read-SentAlerts keeps what the resolved edit needs' {
+    It 'reads back the message text and the edited flag, and a missing message id as null' {
+        $dir = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $dir | Out-Null
+        $now = Get-NowMs
+        Save-SentAlerts $dir @{
+            'req:a' = @{ message = 5; session = 's'; at = $now; resolved = $true; text = 'Hello'; edited = $true }
+            'req:b' = @{ message = $null; session = 's'; at = $now; resolved = $false } } | Out-Null
+        $r = Read-SentAlerts $dir
+        $r['req:a'].text | Should -BeExactly 'Hello'
+        $r['req:a'].edited | Should -BeTrue
+        $r['req:b'].message | Should -BeNullOrEmpty
+        $r['req:b'].text | Should -BeExactly ''
+        $r['req:b'].edited | Should -BeFalse
+    }
+}
+
+Describe 'ConvertTo-AwaySecs' {
+    It 'keeps <text> as <secs>' -ForEach @(@{ text = '0'; secs = 0 }, @{ text = '1'; secs = 1 }, @{ text = '600'; secs = 600 }) {
+        ConvertTo-AwaySecs $text | Should -Be $secs
+    }
+    It 'falls back to 300 for "<text>"' -ForEach @(@{ text = '' }, @{ text = '-5' }, @{ text = 'abc' }, @{ text = '1.5' }, @{ text = '99999999999' }) {
+        ConvertTo-AwaySecs $text | Should -Be 300
+    }
+}
+
+Describe 'Get-IdleSeconds' {
+    It 'returns the seconds since the last input as a non-negative number' {
+        $s = Get-IdleSeconds
+        $s | Should -BeOfType [int]
+        $s | Should -BeGreaterOrEqual 0
+    }
+}
+
+Describe 'Telegram sender helpers' {
+    BeforeEach {
+        $script:Q = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:Q | Out-Null
+    }
+
+    It 'Read-AlertFiles reads the files with that prefix, adds the file path and skips broken ones' {
+        $id = Add-AlertOutbox $script:Q @{ kind = 'permission'; session = 's1'; detail = 'ls' }
+        Set-WaitMarker $script:Q @{ session = 's2'; kind = 'plan'; created = 1 }
+        [IO.File]::WriteAllText((Join-Path $script:Q 'tg-broken.json'), '{"id": ')
+        $r = @(Read-AlertFiles $script:Q 'tg')
+        $r.Count | Should -Be 1
+        $r[0].id | Should -BeExactly $id
+        $r[0].file | Should -BeExactly (Join-Path $script:Q "tg-$id.json")
+    }
+    It 'Get-SeenStamps maps each session to its seen time' {
+        Set-SessionSeen $script:Q 's1'
+        [IO.File]::WriteAllText((Join-Path $script:Q 'seen-s2.json'), '{"session":"s2","at":1234}')
+        $t = Get-SeenStamps $script:Q
+        $t | Should -BeOfType [hashtable]
+        $t['s2'] | Should -Be 1234
+        [math]::Abs($t['s1'] - (Get-NowMs)) | Should -BeLessThan 5000
+    }
+    It 'Select-UnseenAlerts drops items whose session was seen after they were created, and keeps the rest' {
+        $items = @(
+            [pscustomobject]@{ session = 'old'; created = [int64]100 }
+            [pscustomobject]@{ session = 'same'; created = [int64]200 }
+            [pscustomobject]@{ session = 'later'; created = [int64]300 }
+            [pscustomobject]@{ session = 'none'; created = [int64]400 })
+        $seen = @{ old = [int64]150; same = [int64]200; later = [int64]250 }
+        $r = @(Select-UnseenAlerts $items $seen)
+        ($r | ForEach-Object { $_.session }) -join ',' | Should -BeExactly 'same,later,none'
+    }
+    It 'Remove-OldAlertFiles removes stamps and markers older than 24 h and outbox entries older than 30 min' {
+        foreach ($n in 'seen-a.json', 'alerted-a.json', 'wait-a.json', 'seen-b.json', 'tg-old.json', 'tg-new.json', 'done-a-1.json', 'req-a.json') {
+            [IO.File]::WriteAllText((Join-Path $script:Q $n), '{}')
+        }
+        $day = [DateTime]::UtcNow.AddHours(-25)
+        foreach ($n in 'seen-a.json', 'alerted-a.json', 'wait-a.json', 'done-a-1.json', 'req-a.json') { [IO.File]::SetLastWriteTimeUtc((Join-Path $script:Q $n), $day) }
+        [IO.File]::SetLastWriteTimeUtc((Join-Path $script:Q 'tg-old.json'), [DateTime]::UtcNow.AddMinutes(-31))
+        [IO.File]::SetLastWriteTimeUtc((Join-Path $script:Q 'seen-b.json'), [DateTime]::UtcNow.AddHours(-23))
+        Remove-OldAlertFiles $script:Q (Get-NowMs)
+        $left = @(Get-ChildItem -LiteralPath $script:Q -File | ForEach-Object { $_.Name } | Sort-Object)
+        $left -join ',' | Should -BeExactly 'done-a-1.json,req-a.json,seen-b.json,tg-new.json'
+    }
+
+    Context 'resolved' {
+        BeforeAll {
+            function New-Sent($Message, $Session, $At, $Resolved = $false, $Edited = $false, $Text = 'Alert') {
+                @{ message = $Message; session = $Session; at = [int64]$At; resolved = $Resolved; text = $Text; edited = $Edited }
+            }
+        }
+        It 'Update-ResolvedAlerts marks an alert resolved when its session was seen after it was sent' {
+            $sent = @{ 'req:a' = (New-Sent 1 's1' 100); 'req:b' = (New-Sent 2 's2' 100); 'req:c' = (New-Sent 3 's3' 100) }
+            Update-ResolvedAlerts $sent @{ s1 = [int64]150; s2 = [int64]100 } @{} | Should -BeTrue
+            $sent['req:a'].resolved | Should -BeTrue
+            $sent['req:b'].resolved | Should -BeFalse
+            $sent['req:c'].resolved | Should -BeFalse
+        }
+        It 'Update-ResolvedAlerts marks a finished notice resolved when it was closed in the widget' {
+            $sent = @{ 'done:done-s1-5.json' = (New-Sent 1 's1' 100); 'done:done-s2-6.json' = (New-Sent 2 's2' 100) }
+            Update-ResolvedAlerts $sent @{} @{ 'done-s1-5.json' = $true } | Should -BeTrue
+            $sent['done:done-s1-5.json'].resolved | Should -BeTrue
+            $sent['done:done-s2-6.json'].resolved | Should -BeFalse
+        }
+        It 'Update-ResolvedAlerts returns false when nothing changed' {
+            $sent = @{ 'req:a' = (New-Sent 1 's1' 100 $true) }
+            Update-ResolvedAlerts $sent @{ s1 = [int64]500 } @{} | Should -BeFalse
+        }
+        It 'Get-ResolvedEdit gives a message whose alerts are all resolved, once' {
+            $sent = @{ 'req:a' = (New-Sent 7 's1' 100 $true -Text 'Batch'); 'req:b' = (New-Sent 7 's2' 100 $true -Text 'Batch') }
+            $e = Get-ResolvedEdit $sent
+            $e.message | Should -Be 7
+            $e.text | Should -BeExactly 'Batch'
+            @($e.keys | Sort-Object) -join ',' | Should -BeExactly 'req:a,req:b'
+            foreach ($k in $e.keys) { $sent[$k].edited = $true }
+            Get-ResolvedEdit $sent | Should -BeNullOrEmpty
+        }
+        It 'Get-ResolvedEdit waits until every alert of a batch is resolved' {
+            $sent = @{ 'req:a' = (New-Sent 7 's1' 100 $true); 'req:b' = (New-Sent 7 's2' 100 $false) }
+            Get-ResolvedEdit $sent | Should -BeNullOrEmpty
+        }
+        It 'Get-ResolvedEdit skips alerts that were never delivered (no message id) or have no text' {
+            $sent = @{ 'req:a' = (New-Sent $null 's1' 100 $true); 'req:b' = (New-Sent 8 's2' 100 $true -Text '') }
+            Get-ResolvedEdit $sent | Should -BeNullOrEmpty
+        }
+        It 'Format-ResolvedText appends the mark after a blank line' {
+            Format-ResolvedText 'Alert' 'OK resolved' | Should -BeExactly "Alert`n`nOK resolved"
+        }
+        It 'Format-ResolvedText cuts a long text so the result fits in 4096 characters' {
+            $r = Format-ResolvedText ('x' * 4096) 'OK resolved'
+            $r.Length | Should -BeLessOrEqual 4096
+            $r | Should -BeLike "*...`n`nOK resolved"
+        }
+    }
+}

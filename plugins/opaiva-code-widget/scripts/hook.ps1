@@ -43,8 +43,7 @@ $TerminalHosts = @('windowsterminal.exe', 'openconsole.exe', 'conhost.exe', 'pow
     'wezterm-gui.exe', 'alacritty.exe', 'mintty.exe', 'tabby.exe', 'hyper.exe')
 # Processes that own a VS Code window
 $VsCodeProcesses = @('code.exe', 'code - insiders.exe')
-$AwaySecs = 300
-if ($env:CLAUDE_WIDGET_AWAY_SECS) { $AwaySecs = [int]$env:CLAUDE_WIDGET_AWAY_SECS }
+$AwaySecs = ConvertTo-AwaySecs $env:CLAUDE_WIDGET_AWAY_SECS
 
 $Lang = Resolve-Lang $env:CLAUDE_WIDGET_LANG
 $S = Get-Strings $Lang
@@ -107,24 +106,6 @@ function Remove-Done([string]$sid) {
     if (-not $sid) { return }
     Get-ChildItem -LiteralPath $Queue -Filter "done-$sid-*.json" -File -ErrorAction SilentlyContinue |
         Remove-Item -Force -ErrorAction SilentlyContinue
-}
-
-function Get-IdleSeconds {
-    try {
-        if (-not ('ClaudeWidget.Idle' -as [type])) {
-            Add-Type -Namespace ClaudeWidget -Name Idle -MemberDefinition @'
-[StructLayout(LayoutKind.Sequential)] public struct LASTINPUTINFO { public uint cbSize; public uint dwTime; }
-[DllImport("user32.dll")] static extern bool GetLastInputInfo(ref LASTINPUTINFO info);
-public static uint Seconds() {
-    var info = new LASTINPUTINFO();
-    info.cbSize = (uint)Marshal.SizeOf(info);
-    if (!GetLastInputInfo(ref info)) return 0;
-    return ((uint)Environment.TickCount - info.dwTime) / 1000;
-}
-'@
-        }
-        return [int][ClaudeWidget.Idle]::Seconds()
-    } catch { return 0 }
 }
 
 function Test-Away { return (Get-IdleSeconds) -ge $AwaySecs }

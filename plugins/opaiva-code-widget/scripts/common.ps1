@@ -268,6 +268,34 @@ function Get-BusySessions([string]$BusyDir, [int64]$MaxAgeMs, [int64]$QuietMs) {
     }
 }
 
+# Seconds since the last mouse or keyboard input on this PC (0 when Windows cannot tell). hook.ps1 and the
+# widget both ask it whether you are away.
+function Get-IdleSeconds {
+    try {
+        if (-not ('ClaudeWidget.Idle' -as [type])) {
+            Add-Type -Namespace ClaudeWidget -Name Idle -MemberDefinition @'
+[StructLayout(LayoutKind.Sequential)] public struct LASTINPUTINFO { public uint cbSize; public uint dwTime; }
+[DllImport("user32.dll")] static extern bool GetLastInputInfo(ref LASTINPUTINFO info);
+public static uint Seconds() {
+    var info = new LASTINPUTINFO();
+    info.cbSize = (uint)Marshal.SizeOf(info);
+    if (!GetLastInputInfo(ref info)) return 0;
+    return ((uint)Environment.TickCount - info.dwTime) / 1000;
+}
+'@
+        }
+        return [int][ClaudeWidget.Idle]::Seconds()
+    } catch { return 0 }
+}
+
+# CLAUDE_WIDGET_AWAY_SECS as the seconds without input that count as away: a whole number from 0 (always away,
+# which the tests use); anything else, or nothing, gives the default of 5 minutes
+function ConvertTo-AwaySecs([string]$Text) {
+    $n = 0
+    if ([int]::TryParse($Text, [ref]$n) -and $n -ge 0) { return $n }
+    return 300
+}
+
 # "Do not disturb" is the file dnd.flag in the data folder: hook.ps1 reads it to send requests to
 # VS Code, and the widget reads it to hide itself
 function Test-Dnd([string]$Dir) { Test-Path -LiteralPath (Join-Path $Dir 'dnd.flag') }
@@ -689,8 +717,10 @@ function Format-AlertText($Alerts, $S) {
     return $text
 }
 
-# telegram-sent.json: what was already sent, key -> @{ message; session; at; resolved }. message is the Telegram
-# message id (alerts sent in one batch share it). Entries older than a day are forgotten. Never throws.
+# telegram-sent.json: what was already sent, key -> @{ message; session; at; resolved; text; edited }. message is
+# the Telegram message id (alerts sent in one batch share it; $null while sending or when the send failed), text
+# the message as sent and edited whether it was already edited to resolved. Entries older than a day are
+# forgotten. Never throws.
 function Read-SentAlerts([string]$Dir) {
     $result = @{}
     try {
@@ -704,7 +734,8 @@ function Read-SentAlerts([string]$Dir) {
             $at = [int64]0
             if (-not [int64]::TryParse([string]$v.at, [ref]$at)) { continue }
             if (($now - $at) -gt (24 * 60 * 60 * 1000)) { continue }
-            $result[$p.Name] = @{ message = $v.message; session = [string]$v.session; at = $at; resolved = [bool]$v.resolved }
+            $result[$p.Name] = @{ message = $v.message; session = [string]$v.session; at = $at; resolved = [bool]$v.resolved
+                                  text = [string]$v.text; edited = [bool]$v.edited }
         }
     } catch { $result = @{} }
     return $result
@@ -717,4 +748,95 @@ function Save-SentAlerts([string]$Dir, [hashtable]$Sent) {
         Write-JsonAtomic (Join-Path $Dir 'telegram-sent.json') $Sent -Replace
         return $true
     } catch { return $false }
+}
+
+# ---------------- Telegram sender helpers (used by the widget) ----------------
+
+# The <Prefix>-*.json files of the queue folder (tg, wait, seen), each with its full path added as file. A file
+# that cannot be read (broken, or being replaced right now) is skipped.
+function Read-AlertFiles([string]$Queue, [string]$Prefix) {
+    foreach ($f in @(Get-ChildItem -LiteralPath $Queue -Filter "$Prefix-*.json" -File -ErrorAction SilentlyContinue)) {
+        try { $o = [IO.File]::ReadAllText($f.FullName, (Get-Utf8NoBom)) | ConvertFrom-Json } catch { continue }
+        if (-not $o) { continue }
+        $o | Add-Member -NotePropertyName file -NotePropertyValue $f.FullName -Force
+        $o
+    }
+}
+
+# The seen- stamps as session -> at (Unix ms)
+function Get-SeenStamps([string]$Queue) {
+    $t = @{}
+    foreach ($s in @(Read-AlertFiles $Queue 'seen')) { if ($s.session) { $t[[string]$s.session] = [int64]$s.at } }
+    return $t
+}
+
+# Leaves out alerts whose session moved on after they were created (its seen- stamp is newer): the hook deletes a
+# wait marker on the next event, but a failed delete must not alert, and an outbox entry answered meanwhile is no
+# news any more. Strictly newer: the hook event that writes an alert file stamps seen first, maybe in the same ms.
+function Select-UnseenAlerts($Items, [hashtable]$Seen) {
+    foreach ($i in @($Items)) {
+        if (-not $i) { continue }
+        $sid = [string]$i.session
+        if ($sid -and $Seen.ContainsKey($sid) -and [int64]$Seen[$sid] -gt [int64]$i.created) { continue }
+        $i
+    }
+}
+
+# Deletes alert files nobody needs any more: outbox entries older than 30 minutes (stale news, never sent; this
+# also catches unreadable ones) and seen-, alerted- and wait- files older than a day (the sent state forgets its
+# entries after a day too, and nothing else cleans these up).
+function Remove-OldAlertFiles([string]$Queue, [int64]$NowMs) {
+    foreach ($f in @(Get-ChildItem -LiteralPath $Queue -File -ErrorAction SilentlyContinue)) {
+        if ($f.Name -like 'tg-*.json') { $maxMs = 30 * 60 * 1000 }
+        elseif ($f.Name -match '^(seen|alerted|wait)-.+\.json$') { $maxMs = 24 * 60 * 60 * 1000 }
+        else { continue }
+        if ($NowMs - ([DateTimeOffset]$f.LastWriteTimeUtc).ToUnixTimeMilliseconds() -gt $maxMs) {
+            Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+# Marks sent alerts resolved (in place): their session showed activity after the alert went out (a seen- stamp
+# newer than at), or, for a finished notice (key done:<notice key>), it was closed in the widget ($Closed holds
+# those notice keys). $true when anything changed.
+function Update-ResolvedAlerts([hashtable]$Sent, [hashtable]$Seen, [hashtable]$Closed) {
+    $changed = $false
+    foreach ($k in @($Sent.Keys)) {
+        $e = $Sent[$k]
+        if ($e.resolved) { continue }
+        $sid = [string]$e.session
+        $seenAt = if ($sid -and $Seen.ContainsKey($sid)) { [int64]$Seen[$sid] } else { [int64]0 }
+        # (not $closed: variable names are case-insensitive, it would replace the parameter)
+        $noticeClosed = $k.StartsWith('done:') -and $Closed -and $Closed.ContainsKey($k.Substring(5))
+        if ($seenAt -gt [int64]$e.at -or $noticeClosed) { $e.resolved = $true; $changed = $true }
+    }
+    return $changed
+}
+
+# The next Telegram message to edit to "resolved": one whose alerts (a batch shares one message) are all resolved
+# and that was not edited yet. @{ message; text; keys } or $null. Alerts never delivered (no message id) or saved
+# without their text cannot be edited.
+function Get-ResolvedEdit([hashtable]$Sent) {
+    $byMessage = @{}
+    foreach ($k in $Sent.Keys) {
+        $e = $Sent[$k]
+        if ($null -eq $e.message -or -not $e.text) { continue }
+        $m = [string]$e.message
+        if (-not $byMessage.ContainsKey($m)) { $byMessage[$m] = New-Object System.Collections.ArrayList }
+        [void]$byMessage[$m].Add($k)
+    }
+    foreach ($m in @($byMessage.Keys | Sort-Object)) {
+        $keys = @($byMessage[$m])
+        $entries = @($keys | ForEach-Object { $Sent[$_] })
+        if (@($entries | Where-Object { $_.edited -or -not $_.resolved }).Count -gt 0) { continue }
+        return @{ message = [int64]$entries[0].message; text = [string]$entries[0].text; keys = $keys }
+    }
+    return $null
+}
+
+# A sent message's text with the resolved mark after a blank line, cut to stay within Telegram's 4096 characters
+function Format-ResolvedText([string]$Text, [string]$Mark) {
+    $suffix = "`n`n" + $Mark
+    if (($Text + $suffix).Length -gt 4096) { $Text = Format-CutText $Text (4096 - $suffix.Length) }
+    return $Text + $suffix
 }

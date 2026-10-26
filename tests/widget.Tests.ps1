@@ -444,3 +444,180 @@ Describe 'widget.ps1 preferences' -Tag 'Desktop' {
         $size | Should -Not -BeNullOrEmpty
     }
 }
+
+Describe 'widget.ps1 Telegram alerts' -Tag 'Desktop' {
+    BeforeAll {
+        . (Join-Path $PSScriptRoot 'helpers\FakeTelegram.ps1')
+        $script:Token = '123456:TEST-token-never-real'
+        # A sandbox data dir with Telegram connected and on, alerts after 1 minute, no sounds; the widget sits in
+        # the top-left corner so nobody mistakes a test card for a real one
+        function New-TgSandbox([string]$AwaySecs = '100000') {
+            $data = Join-Path ([IO.Path]::GetTempPath()) ('ccw-widget-' + [guid]::NewGuid().ToString('N'))
+            New-Item -ItemType Directory -Path (Join-Path $data 'queue') | Out-Null
+            [IO.File]::WriteAllText((Join-Path $data 'state.json'), '{"right":520,"bottom":330}')
+            [IO.File]::WriteAllText((Join-Path $data 'prefs.json'), '{"telegram":true,"notifyAfter":1,"volume":0}')
+            Save-TelegramConfig $data $script:Token '4242' 'testbot' 'Tester' | Should -BeTrue
+            Set-TgAwaySecs $data $AwaySecs
+            return $data
+        }
+        # CLAUDE_WIDGET_AWAY_SECS through the sandbox settings file (read when the widget starts)
+        function Set-TgAwaySecs([string]$Data, [string]$AwaySecs) {
+            [IO.File]::WriteAllText((Join-Path $Data 'settings.json'), ('{"env":{"CLAUDE_WIDGET_AWAY_SECS":"' + $AwaySecs + '"}}'))
+        }
+        function Start-TgWidget([string]$Data, [string]$Url) {
+            Start-Process powershell.exe -PassThru -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
+                '-File', ('"{0}"' -f $widget), '-DataDir', ('"{0}"' -f $Data), '-Lang', 'en',
+                '-SettingsPath', ('"{0}"' -f (Join-Path $Data 'settings.json')), '-TelegramUrl', $Url
+        }
+        function Stop-TgWidget($Proc) {
+            if ($Proc) { Stop-Process -Id $Proc.Id -Force -ErrorAction SilentlyContinue; [void]$Proc.WaitForExit(5000) }
+        }
+        # (the comma keeps a single call an array: a lone hashtable's Count is its number of keys)
+        function Get-TgCalls($Fake, [string]$Method) { , @($Fake.Requests.ToArray() | Where-Object { $_.method -eq $Method }) }
+        function Wait-Until([scriptblock]$Condition, [int]$Seconds = 30) {
+            $deadline = (Get-Date).AddSeconds($Seconds)
+            while ((Get-Date) -lt $deadline) { if (& $Condition) { return $true }; Start-Sleep -Milliseconds 250 }
+            return $false
+        }
+        $script:SendOk = '{"ok":true,"result":{"message_id":77,"chat":{"id":4242},"text":"x"}}'
+        $script:EditOk = '{"ok":true,"result":true}'
+    }
+    BeforeEach {
+        $fake = Start-FakeTelegram
+        $fake.Replies['sendMessage'] = $script:SendOk
+        $fake.Replies['editMessageText'] = $script:EditOk
+        $proc = $null
+        $data = $null
+    }
+    AfterEach {
+        Stop-TgWidget $proc
+        Stop-FakeTelegram $fake
+        if ($data) { Remove-Item -LiteralPath $data -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'sends one batched message for two outbox entries' {
+        $data = New-TgSandbox
+        $queue = Join-Path $data 'queue'
+        [void](Add-AlertOutbox $queue @{ kind = 'permission'; session = 's1'; cwd = 'C:\dev\alpha'; detail = 'Bash: npm test'; reason = 'timeout' })
+        [void](Add-AlertOutbox $queue @{ kind = 'question'; session = 's2'; cwd = 'C:\dev\beta'; detail = 'Which database?'; reason = 'away' })
+        $proc = Start-TgWidget $data $fake.Url
+        (Wait-Until { (Get-TgCalls $fake 'sendMessage').Count -ge 1 }) | Should -BeTrue
+        Start-Sleep -Seconds 8
+        $calls = Get-TgCalls $fake 'sendMessage'
+        $calls.Count | Should -Be 1
+        $text = ($calls[0].body | ConvertFrom-Json).text
+        $text | Should -BeLike '*Bash: npm test*'
+        $text | Should -BeLike '*Which database?*'
+        @(Get-ChildItem -LiteralPath $queue -Filter 'tg-*.json').Count | Should -Be 0
+        $sent = Read-SentAlerts $data
+        $sent.Count | Should -Be 2
+        foreach ($k in $sent.Keys) { $sent[$k].message | Should -Be 77 }
+        Join-Path $data 'widget.log' | Should -Not -Exist
+    }
+
+    It 'does not send the same alert again after a restart' {
+        # A finished notice stays in the queue (an outbox entry is deleted once sent): it is still due after the restart
+        $data = New-TgSandbox
+        $queue = Join-Path $data 'queue'
+        $created = (Get-NowMs) - 2 * 60000
+        Write-JsonAtomic (Join-Path $queue "done-s1-$created.json") ([ordered]@{ session = 's1'; created = $created; cwd = 'C:\dev\alpha'
+                message = 'All tests pass'; hwnd = 0; kind = 'vscode'; title = ''; desktopApp = $false })
+        $proc = Start-TgWidget $data $fake.Url
+        (Wait-Until { (Get-TgCalls $fake 'sendMessage').Count -ge 1 }) | Should -BeTrue
+        Stop-TgWidget $proc
+        $proc = Start-TgWidget $data $fake.Url
+        (Wait-Until { Test-Path -LiteralPath (Join-Path $data 'widget.json') }) | Should -BeTrue
+        Start-Sleep -Seconds 12
+        (Get-TgCalls $fake 'sendMessage').Count | Should -Be 1
+        (Join-Path $queue "done-s1-$created.json") | Should -Exist
+    }
+
+    It 'sends nothing while present for a wait marker, and sends once when away' {
+        $data = New-TgSandbox '100000'
+        $queue = Join-Path $data 'queue'
+        Set-WaitMarker $queue @{ session = 's1'; kind = 'plan'; cwd = 'C:\dev\alpha'; detail = 'Plan: refactor'; created = (Get-NowMs) - 2 * 60000 }
+        $proc = Start-TgWidget $data $fake.Url
+        (Wait-Until { Test-Path -LiteralPath (Join-Path $data 'widget.json') }) | Should -BeTrue
+        Start-Sleep -Seconds 12
+        (Get-TgCalls $fake 'sendMessage').Count | Should -Be 0
+        Stop-TgWidget $proc
+
+        Set-TgAwaySecs $data '0'
+        $proc = Start-TgWidget $data $fake.Url
+        (Wait-Until { (Get-TgCalls $fake 'sendMessage').Count -ge 1 }) | Should -BeTrue
+        Start-Sleep -Seconds 8
+        $calls = Get-TgCalls $fake 'sendMessage'
+        $calls.Count | Should -Be 1
+        ($calls[0].body | ConvertFrom-Json).text | Should -BeLike '*Plan: refactor*'
+    }
+
+    It 'ignores a wait marker of a session seen after the marker was written' {
+        # The hook removes the marker on the next event; when that delete failed, the seen stamp still tells
+        $data = New-TgSandbox '0'
+        $queue = Join-Path $data 'queue'
+        Set-WaitMarker $queue @{ session = 's1'; kind = 'plan'; cwd = 'C:\dev\alpha'; detail = 'Plan'; created = (Get-NowMs) - 2 * 60000 }
+        Write-JsonAtomic (Join-Path $queue 'seen-s1.json') ([ordered]@{ session = 's1'; at = (Get-NowMs) - 60000 })
+        $proc = Start-TgWidget $data $fake.Url
+        (Wait-Until { Test-Path -LiteralPath (Join-Path $data 'widget.json') }) | Should -BeTrue
+        Start-Sleep -Seconds 12
+        (Get-TgCalls $fake 'sendMessage').Count | Should -Be 0
+    }
+
+    It 'edits the message to resolved when the session is seen again' {
+        $data = New-TgSandbox
+        $queue = Join-Path $data 'queue'
+        [void](Add-AlertOutbox $queue @{ kind = 'permission'; session = 's1'; cwd = 'C:\dev\alpha'; detail = 'Bash: npm test'; reason = 'timeout' })
+        $proc = Start-TgWidget $data $fake.Url
+        (Wait-Until { (Get-TgCalls $fake 'sendMessage').Count -ge 1 }) | Should -BeTrue
+        (Wait-Until { (Read-SentAlerts $data).Values | Where-Object { $_.message -eq 77 } }) | Should -BeTrue
+        Start-Sleep -Seconds 3
+        (Get-TgCalls $fake 'editMessageText').Count | Should -Be 0
+        Set-SessionSeen $queue 's1'
+        (Wait-Until { (Get-TgCalls $fake 'editMessageText').Count -ge 1 }) | Should -BeTrue
+        Start-Sleep -Seconds 6
+        $edits = Get-TgCalls $fake 'editMessageText'
+        $edits.Count | Should -Be 1
+        $body = $edits[0].body | ConvertFrom-Json
+        $body.message_id | Should -Be 77
+        $body.text | Should -BeLike '*Bash: npm test*'
+        $body.text | Should -BeLike ('*' + [char]0x2705 + ' resolved')
+        (Get-TgCalls $fake 'sendMessage').Count | Should -Be 1
+    }
+
+    It 'keeps the UI responsive while Telegram does not answer' {
+        $fake.Replies['sendMessage'] = @{ status = 200; body = $script:SendOk; delayMs = 15000 }
+        $data = New-TgSandbox
+        $queue = Join-Path $data 'queue'
+        [void](Add-AlertOutbox $queue @{ kind = 'permission'; session = 's1'; cwd = 'C:\dev\alpha'; detail = 'Bash: npm test'; reason = 'timeout' })
+        $proc = Start-TgWidget $data $fake.Url
+        (Wait-Until { (Get-TgCalls $fake 'sendMessage').Count -ge 1 }) | Should -BeTrue
+        $pill = @([CcwTest.Windows]::Rects($proc.Id))
+        $pill.Count | Should -BeGreaterThan 0
+        $pillHeight = $pill[0][3] - $pill[0][1]
+        # A request card while the send hangs: the window must grow into the card within 2 s
+        $req = [ordered]@{ id = 'r1'; pid = $PID; kind = 'permission'; created = (Get-NowMs); timeout = 300; cwd = 'C:\dev\app'
+            tool = 'Bash'; description = 'x'; detail = 'ls'; title = ''; change = $null; suggestions = @() }
+        Write-JsonAtomic (Join-Path $queue 'req-r1.json') $req
+        $grew = Wait-Until {
+            $r = @([CcwTest.Windows]::Rects($proc.Id))
+            $r.Count -gt 0 -and ($r[0][3] - $r[0][1]) -gt ($pillHeight + 40)
+        } 2
+        $grew | Should -BeTrue
+    }
+
+    It 'logs a failed send without the token' {
+        $fake.Replies['sendMessage'] = @{ status = 403; body = '{"ok":false,"error_code":403,"description":"Forbidden: bot was blocked by the user"}' }
+        $data = New-TgSandbox
+        $queue = Join-Path $data 'queue'
+        [void](Add-AlertOutbox $queue @{ kind = 'permission'; session = 's1'; cwd = 'C:\dev\alpha'; detail = 'Bash: npm test'; reason = 'timeout' })
+        $proc = Start-TgWidget $data $fake.Url
+        $log = Join-Path $data 'widget.log'
+        (Wait-Until { (Test-Path -LiteralPath $log) -and ([IO.File]::ReadAllText($log) -like '*telegram: 403*') }) | Should -BeTrue
+        Start-Sleep -Seconds 8
+        (Get-TgCalls $fake 'sendMessage').Count | Should -Be 2
+        $text = [IO.File]::ReadAllText($log)
+        $text | Should -BeLike '*telegram: 403 Forbidden: bot was blocked by the user*'
+        $text.Contains($script:Token) | Should -BeFalse
+        @(Get-ChildItem -LiteralPath $queue -Filter 'tg-*.json').Count | Should -Be 0
+    }
+}

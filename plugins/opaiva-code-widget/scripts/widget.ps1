@@ -19,12 +19,16 @@ param(
     [string]$OutDir = '',
     [string]$Theme = '',
     # Claude Code settings: its "env" block holds the CLAUDE_WIDGET_* options (the widget is started through WMI)
-    [string]$SettingsPath = (Join-Path $env:USERPROFILE '.claude\settings.json')
+    [string]$SettingsPath = (Join-Path $env:USERPROFILE '.claude\settings.json'),
+    # Tests only: the fake Bot API of tests\helpers\FakeTelegram.ps1. Never read from settings.
+    [string]$TelegramUrl = 'https://api.telegram.org'
 )
 $RenderMode = [bool]$RenderSamples
 $ErrorActionPreference = 'Stop'
 $Utf8 = New-Object System.Text.UTF8Encoding $false
 . (Join-Path $PSScriptRoot 'common.ps1')
+# The Bot API client: its calls only ever run in background runspaces (see "Telegram alerts")
+. (Join-Path $PSScriptRoot 'telegram.ps1')
 $Data = [IO.Path]::GetFullPath($DataDir).TrimEnd('\')
 $Queue = Join-Path $Data 'queue'
 $StatePath = Join-Path $Data 'state.json'
@@ -45,11 +49,8 @@ function Get-WidgetEnv([string]$Name) {
     if ($v) { return $v }
     return ''
 }
-# Same default as hook.ps1: 5 minutes without input counts as away
-$AwaySecs = 300
-$awayText = Get-WidgetEnv 'CLAUDE_WIDGET_AWAY_SECS'
-$awayParsed = 0
-if ([int]::TryParse($awayText, [ref]$awayParsed)) { $AwaySecs = $awayParsed }
+# Same rules as hook.ps1: by default 5 minutes without input counts as away
+$AwaySecs = ConvertTo-AwaySecs (Get-WidgetEnv 'CLAUDE_WIDGET_AWAY_SECS')
 
 # Preferences (prefs.json): theme, opacity, volume, scale, minimal pill. The README screenshots
 # (-RenderSamples) always start from the defaults, plus -Theme.
@@ -290,6 +291,7 @@ try {
     $script:qState = New-Object System.Collections.ArrayList   # state of the questions on screen
     $script:typing = $false    # focus allowed to type an "Other answer"
     $script:prevFg = [IntPtr]::Zero
+    $script:tgClosed = @{}     # notices closed here since the last Telegram round (key -> $true)
 
     # Every color in this file is written in the dark theme; the current theme's map translates it
     $script:colorMap = @{}
@@ -990,6 +992,8 @@ try {
         $d = if ($Key) { $script:doneItems[$Key].notice } else { $script:currentDone }
         if (-not $d -or (Test-ClickTooSoon)) { return }
         Remove-Item -LiteralPath $d.file -Force -ErrorAction SilentlyContinue
+        # You saw it: a Telegram alert already sent for it gets edited to resolved
+        $script:tgClosed[[string]$d.key] = $true
         $script:currentDone = $null
         if ($GoToSession -and $script:canFocus) {
             # The exact window remembered for that session (VS Code or terminal)...
@@ -1300,6 +1304,151 @@ try {
 
     if ($RenderMode) { Export-Samples; return }
 
+    # ---------------- Telegram alerts ----------------
+    # hook.ps1 leaves the alert files of common.ps1 in the queue; the widget sends them. Every Bot API call runs in
+    # a background runspace that the timer polls, one call at a time: the UI thread never waits on the network.
+    # What goes out is recorded in telegram-sent.json before the call, so a restart or a second widget never sends
+    # it twice (an alert lost to a crash in the middle of a send is the lesser evil).
+    $TelegramScript = Join-Path $PSScriptRoot 'telegram.ps1'
+    # Alerts that become due within this time of the first one go out as one message
+    $TgBatchMs = 5000
+    $script:tgCall = $null       # the call running: @{ kind (send|edit); call; token; and for a send keys, entries, text, files, tries }
+    $script:tgRetry = $null      # a send that failed once, tried again on the next round
+    $script:tgBatchSince = 0     # when the first alert of the batch being collected became due
+
+    # Calls a telegram.ps1 function in a runspace of its own. PowerShell classes (TelegramError) do not cross
+    # runspaces, so the runspace loads telegram.ps1 itself and hands back a plain hashtable: Receive-TelegramCall.
+    function Start-TelegramCall([string]$Function, [object[]]$Arguments) {
+        $ps = [powershell]::Create()
+        [void]$ps.AddScript({
+                param($Script, $Function, $Arguments, $BaseUrl)
+                . $Script
+                try { @{ ok = $true; result = (& $Function @Arguments -BaseUrl $BaseUrl) } }
+                catch {
+                    $e = $_.Exception
+                    @{ ok = $false; status = [int]$e.Status; description = $(if ($e.Description) { [string]$e.Description } else { $e.Message }) }
+                }
+            }).AddArgument($TelegramScript).AddArgument($Function).AddArgument($Arguments).AddArgument($TelegramUrl)
+        return @{ ps = $ps; handle = $ps.BeginInvoke(); started = Get-NowMs }
+    }
+
+    # The outcome of a finished call: @{ ok = $true; result } or @{ ok = $false; status; description }
+    function Receive-TelegramCall($Call) {
+        try {
+            $out = @($Call.ps.EndInvoke($Call.handle))
+            if ($out.Count -gt 0 -and $out[-1] -is [hashtable]) { return $out[-1] }
+            return @{ ok = $false; status = 0; description = 'no result' }
+        }
+        catch { return @{ ok = $false; status = 0; description = $_.Exception.Message } }
+        finally { $Call.ps.Dispose() }
+    }
+
+    function Write-TelegramFailure($Result, [string]$Token) {
+        Write-Log ('telegram: {0} {1}' -f $Result.status, (Hide-TelegramToken ([string]$Result.description) $Token))
+    }
+
+    function Send-AlertBatch($Job, $Config) {
+        $Job.kind = 'send'
+        $Job.token = $Config.token
+        $Job.call = Start-TelegramCall 'Send-TelegramText' @($Config.token, $Config.chat, $Job.text)
+        $script:tgCall = $Job
+    }
+
+    # A call ended. A delivered batch keeps its message id (for the resolved edit) and its outbox files go. A failed
+    # send is tried once more on the next round, then logged and dropped: its keys stay, so it never goes out late.
+    function Complete-TelegramCall {
+        $job = $script:tgCall
+        $script:tgCall = $null
+        $r = Receive-TelegramCall $job.call
+        if ($job.kind -eq 'edit') {
+            if (-not $r.ok) { Write-TelegramFailure $r $job.token }
+            return
+        }
+        if ($r.ok) {
+            $sent = Read-SentAlerts $Data
+            foreach ($k in $job.keys) {
+                $e = $job.entries[$k]
+                $e.message = [int64]$r.result
+                $sent[$k] = $e
+            }
+            if (-not (Save-SentAlerts $Data $sent)) { Write-Log 'telegram: could not save telegram-sent.json' }
+        }
+        elseif ($job.tries -lt 2) { $job.tries++; $script:tgRetry = $job; return }
+        else { Write-TelegramFailure $r $job.token }
+        foreach ($f in $job.files) { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue }
+    }
+
+    # Every ~2 s from the timer, before Update-View: that one stops in do not disturb, these alerts do not
+    function Update-Alerts {
+        if ($script:tgCall) {
+            if (-not $script:tgCall.call.handle.IsCompleted) { return }
+            Complete-TelegramCall
+        }
+        if (-not (Test-TelegramReady $Data $script:prefs)) {
+            $script:tgRetry = $null
+            $script:tgBatchSince = 0
+            $script:tgClosed.Clear()
+            return
+        }
+        if ($script:tgRetry) {
+            $job = $script:tgRetry
+            $script:tgRetry = $null
+            $cfg = Read-TelegramConfig $Data
+            if ($cfg) { Send-AlertBatch $job $cfg } else { Write-Log 'telegram: cannot read telegram.json' }
+            return
+        }
+
+        $now = Get-NowMs
+        Remove-OldAlertFiles $Queue $now
+        $seen = Get-SeenStamps $Queue
+        $sent = Read-SentAlerts $Data
+        # Get-DueAlerts is pure: outbox entries already sent, stale or answered meanwhile are deleted here
+        $outbox = New-Object System.Collections.ArrayList
+        foreach ($e in @(Read-AlertFiles $Queue 'tg')) {
+            if ($sent.ContainsKey("req:$($e.id)") -or ($now - [int64]$e.created) -gt 30 * 60 * 1000 -or @(Select-UnseenAlerts @($e) $seen).Count -eq 0) {
+                Remove-Item -LiteralPath $e.file -Force -ErrorAction SilentlyContinue
+            }
+            else { [void]$outbox.Add($e) }
+        }
+        $waits = @(Select-UnseenAlerts @(Read-AlertFiles $Queue 'wait') $seen)
+        $notices = @(Select-UnseenAlerts @(Get-Done) $seen)
+        $away = (Get-IdleSeconds) -ge $AwaySecs
+        $due = @(Get-DueAlerts $outbox $notices $waits $sent $now ([int64]$script:prefs.notifyAfter * 60000) $away (Test-Dnd $Data))
+
+        if ($due.Count -eq 0) { $script:tgBatchSince = 0 }
+        elseif ($script:tgBatchSince -eq 0) { $script:tgBatchSince = $now }
+        elseif ($now - $script:tgBatchSince -ge $TgBatchMs) {
+            $cfg = Read-TelegramConfig $Data
+            if (-not $cfg) { Write-Log 'telegram: cannot read telegram.json'; return }
+            $script:tgBatchSince = 0
+            $job = @{ entries = @{}; text = (Format-AlertText $due $S); tries = 1 }
+            foreach ($a in $due) {
+                $entry = @{ message = $null; session = [string]$a.session; at = $now; resolved = $false; text = $job.text; edited = $false }
+                $job.entries[$a.key] = $entry
+                $sent[$a.key] = $entry
+            }
+            $job.keys = @($job.entries.Keys)
+            # Recorded first: what could not be recorded is not sent (a restart would send it again)
+            if (-not (Save-SentAlerts $Data $sent)) { Write-Log 'telegram: could not save telegram-sent.json'; return }
+            $job.files = @($outbox | Where-Object { $job.entries.ContainsKey("req:$($_.id)") } | ForEach-Object { $_.file })
+            Send-AlertBatch $job $cfg
+            return
+        }
+
+        # Resolved: at most one edit per round, the next message on a later round
+        if (Update-ResolvedAlerts $sent $seen $script:tgClosed) { [void](Save-SentAlerts $Data $sent) }
+        $script:tgClosed.Clear()
+        $edit = Get-ResolvedEdit $sent
+        if (-not $edit) { return }
+        $cfg = Read-TelegramConfig $Data
+        if (-not $cfg) { Write-Log 'telegram: cannot read telegram.json'; return }
+        # Marked first, like a send: an edit is tried once, never in a loop
+        foreach ($k in $edit.keys) { $sent[$k].edited = $true }
+        if (-not (Save-SentAlerts $Data $sent)) { Write-Log 'telegram: could not save telegram-sent.json'; return }
+        $script:tgCall = @{ kind = 'edit'; token = $cfg.token
+            call = Start-TelegramCall 'Edit-TelegramText' @($cfg.token, $cfg.chat, $edit.message, (Format-ResolvedText $edit.text $S.tgResolved)) }
+    }
+
     $timer = New-Object System.Windows.Threading.DispatcherTimer
     $timer.Interval = [TimeSpan]::FromMilliseconds(400)
     $script:ticks = 0
@@ -1311,6 +1460,7 @@ try {
             return
         }
         try { Sync-Dnd } catch { Write-Log $_ }
+        if ($script:ticks % 5 -eq 0) { try { Update-Alerts } catch { Write-Log $_ } }
         try { Update-View } catch { Write-Log $_ }
         # Every ~2 s: a monitor unplugged or back, a resolution change, the taskbar moved
         $script:ticks++
