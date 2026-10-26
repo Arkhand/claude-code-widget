@@ -478,8 +478,8 @@ Describe 'Get-AlertAction' {
         @{ decision = ''; waitEnd = 'timeout'; action = 'timeout' }
         @{ decision = ''; waitEnd = 'idle'; action = 'idle' }
         @{ decision = ''; waitEnd = 'session ended'; action = $null }
-        @{ decision = ''; waitEnd = 'widget closed'; action = $null }
-        @{ decision = ''; waitEnd = 'do not disturb'; action = $null }) {
+        @{ decision = ''; waitEnd = 'widget closed'; action = 'wait' }
+        @{ decision = ''; waitEnd = 'do not disturb'; action = 'wait' }) {
         $res = if ($decision) { [pscustomobject]@{ decision = $decision } } else { $null }
         Get-AlertAction $res $waitEnd | Should -Be $action
     }

@@ -443,9 +443,12 @@ function Invoke-AlertWrite([scriptblock]$Write, [string]$LogTag) {
 
 # What Telegram makes of a request that left the widget without an answer: 'wait' (handed to VS Code:
 # waiting in VS Code), 'timeout' or 'idle' (alert now), or $null (answered, or the session ended, ...)
+# Do not disturb turned on, or the widget gone, while the card was up: the request now waits in VS Code just
+# like a hand-over, so it keeps its Telegram coverage.
 function Get-AlertAction($Res, [string]$WaitEnd) {
     if ($Res) { if ([string]$Res.decision -eq 'vscode') { return 'wait' } return $null }
     if ($WaitEnd -in @('timeout', 'idle')) { return $WaitEnd }
+    if ($WaitEnd -in @('do not disturb', 'widget closed')) { return 'wait' }
     return $null
 }
 
