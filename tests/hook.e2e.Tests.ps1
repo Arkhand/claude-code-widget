@@ -317,6 +317,300 @@ Describe 'hook.ps1 end to end' {
         }
     }
 
+    Context 'Telegram alerts' {
+        BeforeAll {
+            # Always an array (the comma keeps a single entry from being unwrapped)
+            function Read-QueueJson($Sandbox, [string]$Filter) {
+                return , @(Get-QueueFiles $Sandbox $Filter | ForEach-Object { [IO.File]::ReadAllText($_.FullName, [Text.Encoding]::UTF8) | ConvertFrom-Json })
+            }
+            function New-BashEvent($Sandbox, [string]$Command) {
+                New-HookEvent 'PermissionRequest' $Sandbox.Data @{ tool_name = 'Bash'; tool_input = @{ command = $Command } }
+            }
+            function New-QuestionEvent($Sandbox) {
+                New-HookEvent 'PreToolUse' $Sandbox.Data @{ tool_name = 'AskUserQuestion'
+                    tool_input = @{ questions = @(@{ question = 'Which DB?'; header = 'DB'; multiSelect = $false; options = @(@{ label = 'A'; description = '' }) }) } }
+            }
+        }
+        BeforeEach {
+            # Connected (the hook only checks that the file exists; the token is fake) and alerts on
+            [void](Save-TelegramConfig $box.Data '123:fake-test-token' '42' 'testbot' 'Tester')
+            [IO.File]::WriteAllText((Join-Path $box.Data 'prefs.json'), '{"telegram":true,"notifyAfter":1}')
+        }
+
+        It 'the request timeout follows closeAfter, not notifyAfter (<close> -> <secs>, no countdown <never>)' -ForEach @(
+            @{ close = 3; secs = 180; never = $false }, @{ close = 0; secs = 3600; never = $true }) {
+            [IO.File]::WriteAllText((Join-Path $box.Data 'prefs.json'), ('{"telegram":true,"notifyAfter":1,"closeAfter":' + $close + '}'))
+            $evt = New-BashEvent $box 'npm test'
+            $run = Start-Hook $box $evt
+            $req = Wait-HookRequest $box
+            $req.timeout | Should -Be $secs
+            $req.noCountdown | Should -BeOfType [bool]
+            $req.noCountdown | Should -Be $never
+            $req.session | Should -BeExactly $evt.session_id
+            Send-WidgetResponse $box $req.id @{ decision = 'allow' }
+            [void](Complete-Hook $run)
+        }
+        It 'the request timeout is the default 5 minutes with a countdown, also without Telegram' {
+            Remove-TelegramConfig $box.Data
+            [IO.File]::WriteAllText((Join-Path $box.Data 'prefs.json'), '{}')
+            $run = Start-Hook $box (New-QuestionEvent $box)
+            $req = Wait-HookRequest $box
+            $req.timeout | Should -Be 300
+            $req.PSObject.Properties.Name | Should -Contain 'noCountdown'
+            $req.noCountdown | Should -BeFalse
+            Send-WidgetResponse $box $req.id @{ decision = 'vscode' }
+            [void](Complete-Hook $run)
+        }
+        It 'alerts at notifyAfter while you are present and keeps the card until you answer' {
+            $evt = New-BashEvent $box 'npm test'
+            $run = Start-Hook $box $evt -Env @{ CLAUDE_WIDGET_WAIT_SECS = '30'; CLAUDE_WIDGET_ALERT_SECS = '1' }
+            $req = Wait-HookRequest $box
+            $deadline = (Get-Date).AddSeconds(15)
+            while ((Get-Date) -lt $deadline -and (Get-QueueFiles $box 'tg-*.json').Count -eq 0) { Start-Sleep -Milliseconds 100 }
+            $tg = Read-QueueJson $box 'tg-*.json'
+            $tg.Count | Should -Be 1
+            $tg[0].reason | Should -BeExactly 'unanswered'
+            $tg[0].session | Should -BeExactly $evt.session_id
+            $tg[0].detail | Should -BeExactly 'Bash: npm test'
+            (Read-QueueJson $box "alerted-$($evt.session_id).json").Count | Should -Be 1
+            # The card is still there and can still be answered
+            Start-Sleep -Seconds 2
+            $run.Process.HasExited | Should -BeFalse
+            Join-Path $box.Queue "req-$($req.id).json" | Should -Exist
+            Send-WidgetResponse $box $req.id @{ decision = 'allow' }
+            $r = Complete-Hook $run
+            ($r.Stdout | ConvertFrom-Json).hookSpecificOutput.decision.behavior | Should -BeExactly 'allow'
+            (Get-QueueFiles $box 'tg-*.json').Count | Should -Be 1
+        }
+        It 'a request alerted at notifyAfter is not alerted again when it closes' {
+            $evt = New-QuestionEvent $box
+            $r = Complete-Hook (Start-Hook $box $evt -Env @{ CLAUDE_WIDGET_WAIT_SECS = '4'; CLAUDE_WIDGET_ALERT_SECS = '1' })
+            $r.Stdout | Should -BeNullOrEmpty
+            $r.Seconds | Should -BeGreaterThan 3.5
+            $tg = Read-QueueJson $box 'tg-*.json'
+            $tg.Count | Should -Be 1
+            $tg[0].reason | Should -BeExactly 'unanswered'
+            $tg[0].kind | Should -BeExactly 'question'
+            (Get-QueueFiles $box 'wait-*.json').Count | Should -Be 0
+        }
+        It 'a request handed to VS Code after its alert gets no wait marker' {
+            $evt = New-BashEvent $box 'npm test'
+            $run = Start-Hook $box $evt -Env @{ CLAUDE_WIDGET_WAIT_SECS = '30'; CLAUDE_WIDGET_ALERT_SECS = '1' }
+            $req = Wait-HookRequest $box
+            $deadline = (Get-Date).AddSeconds(15)
+            while ((Get-Date) -lt $deadline -and (Get-QueueFiles $box 'tg-*.json').Count -eq 0) { Start-Sleep -Milliseconds 100 }
+            (Get-QueueFiles $box 'tg-*.json').Count | Should -Be 1
+            Send-WidgetResponse $box $req.id @{ decision = 'vscode' }
+            [void](Complete-Hook $run)
+            (Get-QueueFiles $box 'wait-*.json').Count | Should -Be 0
+            (Get-QueueFiles $box 'tg-*.json').Count | Should -Be 1
+        }
+        It 'writes an outbox entry when a request times out' {
+            $evt = New-BashEvent $box 'npm test'
+            $r = Complete-Hook (Start-Hook $box $evt -Env @{ CLAUDE_WIDGET_WAIT_SECS = '2' })
+            $r.Stdout | Should -BeNullOrEmpty
+            $tg = Read-QueueJson $box 'tg-*.json'
+            $tg.Count | Should -Be 1
+            $tg[0].reason | Should -BeExactly 'timeout'
+            $tg[0].kind | Should -BeExactly 'permission'
+            $tg[0].session | Should -BeExactly $evt.session_id
+            $tg[0].cwd | Should -BeExactly $box.Data
+            $tg[0].detail | Should -BeExactly 'Bash: npm test'
+            (Get-QueueFiles $box 'wait-*.json').Count | Should -Be 0
+            (Read-QueueJson $box "alerted-$($evt.session_id).json")[0].session | Should -BeExactly $evt.session_id
+        }
+        It 'writes an outbox entry when a question times out' {
+            $evt = New-QuestionEvent $box
+            [void](Complete-Hook (Start-Hook $box $evt -Env @{ CLAUDE_WIDGET_WAIT_SECS = '2' }))
+            $tg = Read-QueueJson $box 'tg-*.json'
+            $tg.Count | Should -Be 1
+            $tg[0].kind | Should -BeExactly 'question'
+            $tg[0].detail | Should -BeExactly 'Which DB?'
+        }
+        It 'writes an outbox entry with reason away when the user is away' {
+            $evt = New-BashEvent $box 'npm test'
+            $r = Complete-Hook (Start-Hook $box $evt -Env @{ CLAUDE_WIDGET_AWAY_SECS = '0' })
+            $r.Stdout | Should -BeNullOrEmpty
+            (Get-QueueFiles $box 'req-*.json').Count | Should -Be 0
+            $tg = Read-QueueJson $box 'tg-*.json'
+            $tg.Count | Should -Be 1
+            $tg[0].reason | Should -BeExactly 'away'
+            $tg[0].session | Should -BeExactly $evt.session_id
+        }
+        It 'writes no alert when the request is answered in the widget' {
+            $run = Start-Hook $box (New-BashEvent $box 'npm test')
+            $req = Wait-HookRequest $box
+            Send-WidgetResponse $box $req.id @{ decision = 'allow' }
+            [void](Complete-Hook $run)
+            (Get-QueueFiles $box 'tg-*.json').Count | Should -Be 0
+            (Get-QueueFiles $box 'wait-*.json').Count | Should -Be 0
+        }
+        It 'writes a wait marker when the widget hands the request to VS Code' {
+            $evt = New-BashEvent $box 'npm test'
+            $run = Start-Hook $box $evt
+            $req = Wait-HookRequest $box
+            Send-WidgetResponse $box $req.id @{ decision = 'vscode' }
+            [void](Complete-Hook $run)
+            $wait = Read-QueueJson $box "wait-$($evt.session_id).json"
+            $wait.Count | Should -Be 1
+            $wait[0].kind | Should -BeExactly 'permission'
+            $wait[0].detail | Should -BeExactly 'Bash: npm test'
+            (Get-QueueFiles $box 'tg-*.json').Count | Should -Be 0
+        }
+        It 'writes a wait marker when do not disturb skips the widget while you are present' {
+            Set-Dnd $box.Data $true
+            $evt = New-BashEvent $box 'npm test'
+            [void](Complete-Hook (Start-Hook $box $evt))
+            (Read-QueueJson $box "wait-$($evt.session_id).json").Count | Should -Be 1
+            (Get-QueueFiles $box 'tg-*.json').Count | Should -Be 0
+        }
+        It 'writes a wait marker for ExitPlanMode' {
+            $evt = New-HookEvent 'PermissionRequest' $box.Data @{ tool_name = 'ExitPlanMode'; tool_input = @{ plan = '## Plan: fix the **login**' } }
+            $r = Complete-Hook (Start-Hook $box $evt)
+            $r.Stdout | Should -BeNullOrEmpty
+            (Get-QueueFiles $box 'req-*.json').Count | Should -Be 0
+            $wait = Read-QueueJson $box "wait-$($evt.session_id).json"
+            $wait.Count | Should -Be 1
+            $wait[0].kind | Should -BeExactly 'plan'
+            $wait[0].detail | Should -BeExactly 'Plan: fix the login'
+        }
+        It 'writes a wait marker on a Notification permission prompt' {
+            $evt = New-HookEvent 'Notification' $box.Data @{ notification_type = 'permission_prompt'; message = 'Claude needs your permission to use Bash'; title = 'Permission needed' }
+            $r = Complete-Hook (Start-Hook $box $evt)
+            $r.ExitCode | Should -Be 0
+            $r.Stdout | Should -BeNullOrEmpty
+            $wait = Read-QueueJson $box "wait-$($evt.session_id).json"
+            $wait.Count | Should -Be 1
+            $wait[0].kind | Should -BeExactly 'permission'
+            $wait[0].detail | Should -BeExactly 'Claude needs your permission to use Bash'
+        }
+        It 'ignores the idle Notification and leaves the session unstamped' {
+            $evt = New-HookEvent 'Notification' $box.Data @{ notification_type = 'idle_prompt'; message = 'Claude is waiting for your input' }
+            $r = Complete-Hook (Start-Hook $box $evt)
+            $r.Stdout | Should -BeNullOrEmpty
+            (Get-QueueFiles $box).Count | Should -Be 0
+        }
+        It 'writes no wait marker on a Notification while the widget holds a request of that session' {
+            $perm = New-BashEvent $box 'npm test'
+            $run = Start-Hook $box $perm
+            $req = Wait-HookRequest $box
+            $note = New-HookEvent 'Notification' $box.Data @{ notification_type = 'permission_prompt'; message = 'Claude needs your permission to use Bash' }
+            $note.session_id = $perm.session_id
+            [void](Complete-Hook (Start-Hook $box $note))
+            (Get-QueueFiles $box 'wait-*.json').Count | Should -Be 0
+            Send-WidgetResponse $box $req.id @{ decision = 'allow' }
+            [void](Complete-Hook $run)
+        }
+        It 'a Notification keeps the plan marker already there' {
+            $plan = New-HookEvent 'PermissionRequest' $box.Data @{ tool_name = 'ExitPlanMode'; tool_input = @{ plan = 'x' } }
+            [void](Complete-Hook (Start-Hook $box $plan))
+            $before = (Read-QueueJson $box "wait-$($plan.session_id).json")[0]
+            $note = New-HookEvent 'Notification' $box.Data @{ notification_type = 'permission_prompt'; message = 'Claude needs your permission' }
+            $note.session_id = $plan.session_id
+            [void](Complete-Hook (Start-Hook $box $note))
+            $after = (Read-QueueJson $box "wait-$($plan.session_id).json")[0]
+            $after.kind | Should -BeExactly 'plan'
+            $after.created | Should -Be $before.created
+        }
+        It 'a Notification right after an away alert writes no second marker; one after the session moved on does' {
+            $perm = New-BashEvent $box 'npm test'
+            $sid = $perm.session_id
+            [void](Complete-Hook (Start-Hook $box $perm -Env @{ CLAUDE_WIDGET_AWAY_SECS = '0' }))
+            (Get-QueueFiles $box 'tg-*.json').Count | Should -Be 1
+            $note = New-HookEvent 'Notification' $box.Data @{ notification_type = 'permission_prompt'; message = 'Claude needs your permission to use Bash' }
+            $note.session_id = $sid
+            [void](Complete-Hook (Start-Hook $box $note))
+            Join-Path $box.Queue "wait-$sid.json" | Should -Not -Exist
+            $prompt = New-HookEvent 'UserPromptSubmit' $box.Data @{ prompt = 'go' }
+            $prompt.session_id = $sid
+            [void](Complete-Hook (Start-Hook $box $prompt))
+            [void](Complete-Hook (Start-Hook $box $note))
+            Join-Path $box.Queue "wait-$sid.json" | Should -Exist
+        }
+        It 'a Notification writes no marker when the session moved on after it started' {
+            $note = New-HookEvent 'Notification' $box.Data @{ notification_type = 'permission_prompt'; message = 'm' }
+            New-Item -ItemType Directory -Force -Path $box.Queue | Out-Null
+            # Stands in for the next event's seen stamp landing while this async hook is still running
+            Write-JsonAtomic (Join-Path $box.Queue "seen-$($note.session_id).json") @{ session = $note.session_id; at = (Get-NowMs) + 60000 }
+            [void](Complete-Hook (Start-Hook $box $note))
+            Join-Path $box.Queue "wait-$($note.session_id).json" | Should -Not -Exist
+        }
+        It 'writes no Telegram file for an event without a session id' {
+            $events = @(
+                @{ Event = (New-HookEvent 'PermissionRequest' $box.Data @{ tool_name = 'ExitPlanMode'; tool_input = @{ plan = 'x' } }); Env = @{} },
+                @{ Event = (New-BashEvent $box 'ls'); Env = @{ CLAUDE_WIDGET_AWAY_SECS = '0' } },
+                @{ Event = (New-QuestionEvent $box); Env = @{ CLAUDE_WIDGET_AWAY_SECS = '0' } },
+                @{ Event = (New-HookEvent 'Notification' $box.Data @{ notification_type = 'permission_prompt'; message = 'm' }); Env = @{} })
+            foreach ($e in $events) {
+                $e.Event.Remove('session_id')
+                $r = Complete-Hook (Start-Hook $box $e.Event -Env $e.Env)
+                $r.ExitCode | Should -Be 0
+            }
+            Set-Dnd $box.Data $true
+            $dnd = New-BashEvent $box 'ls'; $dnd.Remove('session_id')
+            [void](Complete-Hook (Start-Hook $box $dnd))
+            (Get-QueueFiles $box).Count | Should -Be 0
+        }
+        It 'the next event of the session removes its wait marker and stamps seen' {
+            $plan = New-HookEvent 'PermissionRequest' $box.Data @{ tool_name = 'ExitPlanMode'; tool_input = @{ plan = 'x' } }
+            [void](Complete-Hook (Start-Hook $box $plan))
+            Join-Path $box.Queue "wait-$($plan.session_id).json" | Should -Exist
+            $prompt = New-HookEvent 'UserPromptSubmit' $box.Data @{ prompt = 'go' }
+            $prompt.session_id = $plan.session_id
+            [void](Complete-Hook (Start-Hook $box $prompt))
+            Join-Path $box.Queue "wait-$($plan.session_id).json" | Should -Not -Exist
+            $seen = Read-QueueJson $box "seen-$($plan.session_id).json"
+            $seen.Count | Should -Be 1
+            $seen[0].session | Should -BeExactly $plan.session_id
+        }
+        It 'writes nothing Telegram-related when Telegram is not connected' {
+            Remove-TelegramConfig $box.Data
+            $sid = 'test-notconnected'
+            $events = @(
+                (New-HookEvent 'PermissionRequest' $box.Data @{ tool_name = 'ExitPlanMode'; tool_input = @{ plan = 'x' } }),
+                (New-HookEvent 'Notification' $box.Data @{ notification_type = 'permission_prompt'; message = 'm' }),
+                (New-HookEvent 'UserPromptSubmit' $box.Data @{ prompt = 'go' }))
+            foreach ($e in $events) { $e.session_id = $sid; [void](Complete-Hook (Start-Hook $box $e)) }
+            $away = New-BashEvent $box 'ls'; $away.session_id = $sid
+            [void](Complete-Hook (Start-Hook $box $away -Env @{ CLAUDE_WIDGET_AWAY_SECS = '0' }))
+            $late = New-BashEvent $box 'ls'; $late.session_id = $sid
+            [void](Complete-Hook (Start-Hook $box $late -Env @{ CLAUDE_WIDGET_WAIT_SECS = '2' }))
+            (Get-QueueFiles $box 'tg-*').Count | Should -Be 0
+            (Get-QueueFiles $box 'wait-*').Count | Should -Be 0
+            (Get-QueueFiles $box 'seen-*').Count | Should -Be 0
+        }
+        It 'writes nothing Telegram-related when alerts are off' {
+            [IO.File]::WriteAllText((Join-Path $box.Data 'prefs.json'), '{"telegram":false,"notifyAfter":1}')
+            $evt = New-HookEvent 'PermissionRequest' $box.Data @{ tool_name = 'ExitPlanMode'; tool_input = @{ plan = 'x' } }
+            [void](Complete-Hook (Start-Hook $box $evt))
+            (Get-QueueFiles $box).Count | Should -Be 0
+        }
+    }
+
+    Context 'finished notice of a Claude desktop app session' {
+        BeforeAll {
+            if (-not ('CcwTest.Desk' -as [type])) {
+                Add-Type -Namespace CcwTest -Name Desk -MemberDefinition '[DllImport("user32.dll")] public static extern IntPtr GetDesktopWindow();'
+            }
+        }
+        It 'Stop stores desktopApp, also without Telegram' {
+            $stop = New-HookEvent 'Stop' $box.Data @{ last_assistant_message = 'ok' }
+            # A window that always exists stands in for the Claude desktop app's window
+            New-Item -ItemType Directory -Force -Path (Join-Path $box.Data 'sessions') | Out-Null
+            Write-JsonAtomic (Join-Path $box.Data "sessions\$($stop.session_id).json") @{ hwnd = [CcwTest.Desk]::GetDesktopWindow().ToInt64(); kind = 'other'; process = 'claude.exe' }
+            [void](Complete-Hook (Start-Hook $box $stop))
+            $notice = (Get-QueueFiles $box "done-$($stop.session_id)-*.json")[0]
+            ([IO.File]::ReadAllText($notice.FullName, [Text.Encoding]::UTF8) | ConvertFrom-Json).desktopApp | Should -BeTrue
+        }
+        It 'Stop stores desktopApp false for other sessions' {
+            $stop = New-HookEvent 'Stop' $box.Data @{ last_assistant_message = 'ok' }
+            [void](Complete-Hook (Start-Hook $box $stop))
+            $json = [IO.File]::ReadAllText((Get-QueueFiles $box "done-$($stop.session_id)-*.json")[0].FullName, [Text.Encoding]::UTF8) | ConvertFrom-Json
+            $json.PSObject.Properties.Name | Should -Contain 'desktopApp'
+            $json.desktopApp | Should -BeFalse
+        }
+    }
+
     Context 'robustness' {
         It 'SessionStart prints nothing' {
             $r = Complete-Hook (Start-Hook $box (New-HookEvent 'SessionStart' $box.Data @{ source = 'startup' }))

@@ -17,22 +17,41 @@ param(
     [string]$Lang = '',
     [string]$RenderSamples = '',
     [string]$OutDir = '',
-    [string]$Theme = ''
+    [string]$Theme = '',
+    # Claude Code settings: its "env" block holds the CLAUDE_WIDGET_* options (the widget is started through WMI)
+    [string]$SettingsPath = (Join-Path $env:USERPROFILE '.claude\settings.json'),
+    # Tests only: the fake Bot API of tests\helpers\FakeTelegram.ps1. Never read from settings.
+    [string]$TelegramUrl = 'https://api.telegram.org',
+    # Tests only: how long a Bot API call may run before the widget gives up on it
+    [int]$TelegramCallMaxSecs = 60
 )
 $RenderMode = [bool]$RenderSamples
 $ErrorActionPreference = 'Stop'
 $Utf8 = New-Object System.Text.UTF8Encoding $false
 . (Join-Path $PSScriptRoot 'common.ps1')
+# The Bot API client: its calls only ever run in background runspaces (see "Telegram alerts")
+. (Join-Path $PSScriptRoot 'telegram.ps1')
 $Data = [IO.Path]::GetFullPath($DataDir).TrimEnd('\')
 $Queue = Join-Path $Data 'queue'
 $StatePath = Join-Path $Data 'state.json'
 # hook.ps1 creates this file to ask a widget from an older version to close itself (so its tray icon is removed)
 $QuitPath = Join-Path $Data 'quit.flag'
 $LogPath = Join-Path $Data 'widget.log'
-$DoneMaxAgeMs = 5 * 60 * 1000
 
 $Lang = Resolve-Lang $Lang
 $S = Get-Strings $Lang
+
+# CLAUDE_WIDGET_* options: the settings.json env block (read once) wins over the process environment.
+# CLAUDE_WIDGET_NO_TRAY stays a plain environment variable: the tests set it for the widgets they start.
+$SettingsEnv = Get-ClaudeSettingsEnv $SettingsPath
+function Get-WidgetEnv([string]$Name) {
+    if ($SettingsEnv.ContainsKey($Name) -and $SettingsEnv[$Name]) { return [string]$SettingsEnv[$Name] }
+    $v = [Environment]::GetEnvironmentVariable($Name)
+    if ($v) { return $v }
+    return ''
+}
+# Same rules as hook.ps1: by default 5 minutes without input counts as away
+$AwaySecs = ConvertTo-AwaySecs (Get-WidgetEnv 'CLAUDE_WIDGET_AWAY_SECS')
 
 # Preferences (prefs.json): theme, opacity, volume, scale, minimal pill. The README screenshots
 # (-RenderSamples) always start from the defaults, plus -Theme.
@@ -138,7 +157,10 @@ try {
     foreach ($n in 'Card', 'IdlePanel', 'IdleDot', 'IdleTitle', 'IdleText', 'SessionsList', 'ChangeBox', 'ChangeLines', 'AlwaysList', 'ReqPanel', 'ReqTitle', 'QPanel', 'QTitle', 'DonePanel',
         'ReqDot', 'Countdown', 'Tool', 'ProjectChip', 'Project', 'QueueChip', 'QueueText', 'Desc', 'Detail', 'Cwd',
         'BtnApprove', 'BtnDeny', 'BtnVs', 'QCountdown', 'QDot', 'QProjectChip', 'QProject', 'QQueueChip', 'QQueueText',
-        'QList', 'BtnAnswer', 'BtnQVs') {
+        'QList', 'BtnAnswer', 'BtnQVs',
+        'PanelTelegram', 'TgStepOf', 'TgSetupTitle', 'TgStepToken', 'TgStepStart', 'TgStepDone', 'TgStep1Title', 'TgHowTo1', 'TgHowTo2',
+        'TgHowTo3', 'TgHowTo4', 'TgOpenBotFather', 'TgToken', 'TgStep2Title', 'TgBotFound', 'TgStep2Text', 'TgWaitDot', 'TgWaiting',
+        'TgStep3Title', 'TgStep3Text', 'TgError', 'TgNext', 'TgOpenBot', 'TgFinish', 'TgCancel', 'TgPhoneHint') {
         $ui[$n] = $win.FindName($n)
     }
 
@@ -154,6 +176,16 @@ try {
     $ui.BtnVs.Content = $S.decideInVsCode
     $ui.BtnAnswer.Content = $S.answer
     $ui.BtnQVs.Content = $S.answerInVsCode
+    $ui.TgSetupTitle.Text = $S.tgSetupTitle
+    $ui.TgStep1Title.Text = $S.tgStep1Title
+    foreach ($i in 1..4) { $ui["TgHowTo$i"].Text = $S."tgHowTo$i" }
+    $ui.TgOpenBotFather.Content = $S.tgOpenBotFather
+    $ui.TgStep2Title.Text = $S.tgStep2Title
+    $ui.TgStep2Text.Text = $S.tgStep2Text
+    $ui.TgWaiting.Text = $S.tgWaiting
+    $ui.TgOpenBot.Content = $S.tgOpenBot
+    $ui.TgFinish.Content = $S.tgFinish
+    $ui.TgCancel.Content = $S.tgCancel
 
     # --- Position: anchored by the bottom-right corner, so the card grows up/left ---
     # $script:savedAnchor is where you last dragged it (state.json). While that spot is on no screen
@@ -273,6 +305,7 @@ try {
     $script:qState = New-Object System.Collections.ArrayList   # state of the questions on screen
     $script:typing = $false    # focus allowed to type an "Other answer"
     $script:prevFg = [IntPtr]::Zero
+    $script:tgClosed = @{}     # notices closed here since the last Telegram round (key -> $true)
 
     # Every color in this file is written in the dark theme; the current theme's map translates it
     $script:colorMap = @{}
@@ -319,12 +352,28 @@ try {
         Set-Theme $name
     }
 
-    # --- Focus: only while typing a free-text answer ---
+    # --- Focus: only while typing (an "Other answer", the Telegram token) or while the right-click menu is open ---
+    # The first of the two to need it remembers where you were; the last one done gives the focus back there
+    $script:menuOpen = $false
+    function Open-Focus {
+        if ($script:typing -or $script:menuOpen) { return }
+        $script:prevFg = [ClaudeWidget.WinFocus]::Foreground()
+        [ClaudeWidget.WinFocus]::SetNoActivate($script:hwnd, $false)
+    }
+    function Close-Focus {
+        if ($script:typing -or $script:menuOpen) { return }
+        [ClaudeWidget.WinFocus]::SetNoActivate($script:hwnd, $true)
+        # Give focus back to where you were, if it is still on the widget
+        if ([ClaudeWidget.WinFocus]::Foreground() -eq $script:hwnd -and $script:prevFg -ne [IntPtr]::Zero) {
+            [void][ClaudeWidget.WinFocus]::Activate($script:prevFg)
+        }
+        $script:prevFg = [IntPtr]::Zero
+    }
+
     function Enable-Typing($box) {
         if ($script:canFocus -and $script:hwnd -ne [IntPtr]::Zero) {
             if (-not $script:typing) {
-                $script:prevFg = [ClaudeWidget.WinFocus]::Foreground()
-                [ClaudeWidget.WinFocus]::SetNoActivate($script:hwnd, $false)
+                Open-Focus
                 $script:typing = $true
             }
             [void][ClaudeWidget.WinFocus]::Activate($script:hwnd)
@@ -338,19 +387,27 @@ try {
     function Disable-Typing {
         if (-not $script:typing) { return }
         $script:typing = $false
-        if ($script:canFocus -and $script:hwnd -ne [IntPtr]::Zero) {
-            [ClaudeWidget.WinFocus]::SetNoActivate($script:hwnd, $true)
-            # Give focus back to where you were, if it is still on the widget
-            if ([ClaudeWidget.WinFocus]::Foreground() -eq $script:hwnd -and $script:prevFg -ne [IntPtr]::Zero) {
-                [void][ClaudeWidget.WinFocus]::Activate($script:prevFg)
-            }
-        }
-        $script:prevFg = [IntPtr]::Zero
+        if ($script:canFocus -and $script:hwnd -ne [IntPtr]::Zero) { Close-Focus }
+    }
+
+    # Windows gives mouse capture and deactivation only to the active window: a menu of a window that never has
+    # the focus did not close when you clicked elsewhere. The widget is the active window while its menu is open.
+    function Open-MenuFocus {
+        if (-not $script:canFocus -or $script:hwnd -eq [IntPtr]::Zero) { return }
+        Open-Focus
+        $script:menuOpen = $true
+        [void][ClaudeWidget.WinFocus]::Activate($script:hwnd)
+    }
+    function Close-MenuFocus {
+        if (-not $script:menuOpen) { return }
+        $script:menuOpen = $false
+        Close-Focus
     }
 
     function Set-Panel([string]$name) {
-        if ($name -ne 'QPanel') { Disable-Typing }
-        foreach ($p in 'IdlePanel', 'ReqPanel', 'QPanel', 'DonePanel') {
+        # Typing goes on only on the panel it started on (the question card, or the Telegram setup card still on screen)
+        if ($name -ne 'QPanel' -and -not ($name -eq 'PanelTelegram' -and $ui.PanelTelegram.Visibility -eq 'Visible')) { Disable-Typing }
+        foreach ($p in 'IdlePanel', 'ReqPanel', 'QPanel', 'DonePanel', 'PanelTelegram') {
             $v = if ($p -eq $name) { 'Visible' } else { 'Collapsed' }
             if ($ui[$p].Visibility -ne $v) { $ui[$p].Visibility = $v }
         }
@@ -373,10 +430,11 @@ try {
         $win.Topmost = $true
     }
 
+    # Hidden for a request that never closes by itself (closeAfter Never)
     function Set-Countdown($textBlock, $r) {
-        $left = [int]$r.timeout - [int](((Get-NowMs) - [int64]$r.created) / 1000)
-        if ($left -lt 0) { $left = 0 }
-        $textBlock.Text = $S.closesIn -f [math]::Floor($left / 60), ($left % 60)
+        $text = Format-Countdown $r (Get-NowMs) $S.closesIn
+        $textBlock.Text = $text
+        $textBlock.Visibility = if ($text) { 'Visible' } else { 'Collapsed' }
     }
 
     function Set-QueueChip($chip, $textBlock, [int]$total) {
@@ -395,7 +453,8 @@ try {
 
     # Queue readers live in common.ps1; the caches keep each file from being re-read every tick
     function Get-Pending { Get-PendingRequests $Queue $script:cache }
-    function Get-Done { Get-DoneNotices $Queue $script:doneCache $DoneMaxAgeMs }
+    # Notices live closeAfter (read each time: the menu can change it while the widget runs)
+    function Get-Done { Get-DoneNotices $Queue $script:doneCache (Get-NoticeMaxAgeMs $script:prefs) }
 
     # ---------------- Permission request ----------------
     # The diff of an Edit/Write under the detail box: red removed lines, green added lines
@@ -836,8 +895,10 @@ try {
         else { $it.ui.DoneAgo.Text = $S.hoursAgo -f [math]::Floor($mins / 60) }
         # Countdown ring: one dash as long as the time left, in units of the stroke thickness
         # (0.0, not 0: with an int first argument PowerShell picks Max(int, int) and rounds the fraction)
-        $left = [math]::Max(0.0, 1 - ((Get-NowMs) - [int64]$d.created) / $DoneMaxAgeMs)
+        $left = [math]::Max(0.0, 1 - ((Get-NowMs) - [int64]$d.created) / (Get-NoticeMaxAgeMs $script:prefs))
         $ring = $it.ui.DoneTimer
+        # Never closes by itself: no countdown (Hidden keeps the header layout)
+        $ring.Visibility = if ([int]$script:prefs.closeAfter -eq 0) { 'Hidden' } else { 'Visible' }
         $len = [math]::PI * ($ring.Width - $ring.StrokeThickness) / $ring.StrokeThickness
         $ring.StrokeDashArray = [System.Windows.Media.DoubleCollection]::new([double[]]@(($left * $len), $len))
         if ($hidden -gt 0) {
@@ -915,6 +976,8 @@ try {
         if ($script:dnd) { return }
         $p = @(Get-Pending)
         if ($p.Count -gt 0) { Show-Request $p[0] $p.Count; return }
+        # The Telegram setup card waits under a request, and comes back after it
+        if ($script:setup) { Show-Setup; return }
         $d = @(Get-Done)
         # (also with no notice left while the last boxes fold away)
         if ($d.Count -gt 0 -or $script:doneItems.Count -gt 0 -or $script:doneLeaving.Count -gt 0) { Show-DoneStack $d; return }
@@ -966,13 +1029,17 @@ try {
         if ($h -ne [IntPtr]::Zero) { [void][ClaudeWidget.WinFocus]::FocusHandle($h.ToInt64()) }
     }
 
-    # Closes the notice with that key (its box's buttons), or the top one (double click)
-    function Close-DoneNotice([string]$Key = '', [switch]$GoToSession) {
+    # Closes the notice with that key (its box's buttons), or the top one (double click).
+    # -Seen: closed because you brought its session window to the front, not by a click: no click guard, and it
+    # also closes a notice with no box (past the shown stack, or while do not disturb hides the boxes)
+    function Close-DoneNotice([string]$Key = '', [switch]$GoToSession, [switch]$Seen) {
         # (a key no longer in the stack: a box that is already folding away)
-        if ($Key -and -not $script:doneItems.Contains($Key)) { return }
-        $d = if ($Key) { $script:doneItems[$Key].notice } else { $script:currentDone }
-        if (-not $d -or (Test-ClickTooSoon)) { return }
+        if ($Key -and -not $script:doneItems.Contains($Key) -and -not ($Seen -and $script:doneCache.ContainsKey($Key))) { return }
+        $d = if (-not $Key) { $script:currentDone } elseif ($script:doneItems.Contains($Key)) { $script:doneItems[$Key].notice } else { $script:doneCache[$Key] }
+        if (-not $d -or (-not $Seen -and (Test-ClickTooSoon))) { return }
         Remove-Item -LiteralPath $d.file -Force -ErrorAction SilentlyContinue
+        # You saw it: a Telegram alert already sent for it gets edited to resolved
+        $script:tgClosed[[string]$d.key] = $true
         $script:currentDone = $null
         if ($GoToSession -and $script:canFocus) {
             # The exact window remembered for that session (VS Code or terminal)...
@@ -985,6 +1052,16 @@ try {
             }
         }
         Update-View
+    }
+
+    # You looked at the session: its finished notice closes (with Telegram, it can no longer alert). Runs every tick,
+    # so it costs one GetForegroundWindow, and nothing at all while no notice has been read
+    function Close-SeenNotices {
+        if (-not $script:canFocus -or $script:doneCache.Count -eq 0) { return }
+        $fg = [ClaudeWidget.WinFocus]::Foreground().ToInt64()
+        # (the widget itself in front says nothing about a session)
+        if ($fg -eq 0 -or $fg -eq $script:hwnd.ToInt64()) { return }
+        foreach ($k in @(Get-NoticesInFront @($script:doneCache.Values) $fg)) { Close-DoneNotice $k -Seen }
     }
 
     $ui.BtnApprove.Add_Click({ Send-Response 'allow' })
@@ -1040,6 +1117,8 @@ try {
             'opacity' { Set-Opacity }
             'scale' { Set-Scale }
             'minimal' { Set-Minimal }
+            # Alerts on, or just connected: what was queued while they were off must not go out now
+            'telegram' { if ($value) { Remove-AlertOutbox $Queue (Get-NowMs) } }
         }
         if (-not (Save-Prefs $Data $script:prefs)) { Write-Log 'could not save prefs.json' }
         Sync-MenuChecks
@@ -1070,11 +1149,58 @@ try {
     $minItem.Add_Click({ param($src, $e) Set-Pref 'minimal' (-not [bool]$script:prefs.minimal); $src.IsChecked = [bool]$script:prefs.minimal })
     $minItem.IsChecked = [bool]$script:prefs.minimal
     [void]$menu.Items.Add($minItem)
+    Add-ChoiceMenu $menu $S.menuClose @(foreach ($m in 1, 3, 5, 15, 30, 0) { @{ label = $(if ($m -eq 0) { $S.closeNever } else { $S.menuMinutes -f $m }); key = 'closeAfter'; value = [int]$m } })
+
+    # Telegram: built again each time it opens, from telegram.json (connected or not)
+    function New-MenuEntry([string]$header, [scriptblock]$onClick) {
+        $item = New-Object System.Windows.Controls.MenuItem
+        $item.Header = $header
+        if ($onClick) { $item.Add_Click($onClick) }
+        return $item
+    }
+    function Update-TelegramMenu {
+        $tg = $script:tgMenu
+        $tg.Items.Clear()
+        # The old "Alert after" choices leave with their items
+        foreach ($e in @($script:prefItems | Where-Object { $_.key -eq 'notifyAfter' })) { $script:prefItems.Remove($e) }
+        # (the README screenshots never read the real connection; the caption needs no token, so none is decrypted)
+        $cfg = if ($RenderMode) { $null } else { Read-TelegramInfo $Data }
+        if ($cfg) {
+            $on = New-MenuEntry $S.tgAlertsOn { param($src, $e) Set-Pref 'telegram' (-not [bool]$script:prefs.telegram); $src.IsChecked = [bool]$script:prefs.telegram }
+            $on.IsChecked = [bool]$script:prefs.telegram
+            [void]$tg.Items.Add($on)
+            Add-ChoiceMenu $tg $S.menuAlertAfter @(foreach ($m in 1, 3, 5) { @{ label = ($S.menuMinutes -f $m); key = 'notifyAfter'; value = [int]$m } })
+            [void]$tg.Items.Add((New-MenuEntry $S.tgSendTest { Send-TelegramTest }))
+            [void]$tg.Items.Add((New-MenuEntry $S.tgDisconnect { Disconnect-Telegram }))
+            $caption = $S.tgConnectedTo -f $cfg.bot
+        }
+        else {
+            [void]$tg.Items.Add((New-MenuEntry $S.tgConnect { Start-Setup }))
+            $caption = $S.tgConnectCaption
+        }
+        [void]$tg.Items.Add((New-Object System.Windows.Controls.Separator))
+        # A grey line of text, not a choice
+        $note = New-MenuEntry $caption $null
+        $note.IsEnabled = $false
+        $note.FontSize = 11.5
+        [void]$tg.Items.Add($note)
+        Sync-MenuChecks
+    }
+    $script:tgMenu = New-MenuEntry $S.menuTelegram $null
+    # (SubmenuOpened bubbles up from "Alert after" too: rebuilding then would close it)
+    $script:tgMenu.Add_SubmenuOpened({ param($src, $e) if ([object]::ReferenceEquals($e.OriginalSource, $src)) { try { Update-TelegramMenu } catch { Write-Log $_ } } })
+    try { Update-TelegramMenu } catch { Write-Log $_ }
+    [void]$menu.Items.Add($script:tgMenu)
     [void]$menu.Items.Add((New-Object System.Windows.Controls.Separator))
     $closeItem = New-Object System.Windows.Controls.MenuItem
     $closeItem.Header = $S.closeWidget
     $closeItem.Add_Click({ Close-Widget })
     [void]$menu.Items.Add($closeItem)
+    $menu.Add_Opened({ try { Open-MenuFocus } catch { Write-Log $_ } })
+    # Later, at Background priority: a menu item's Click comes after Closed, and one that starts typing keeps the focus
+    $menu.Add_Closed({
+        [void]$win.Dispatcher.BeginInvoke([System.Windows.Threading.DispatcherPriority]::Background, [Action]{ try { Close-MenuFocus } catch { Write-Log $_ } })
+    })
     $ui.Card.ContextMenu = $menu
     Sync-MenuChecks
     # The README screenshots are always drawn at normal opacity and size
@@ -1159,7 +1285,7 @@ try {
         }
         $script:hotkeyActions = @{}
         $script:hotkeyIds = @()
-        if ($env:CLAUDE_WIDGET_HOTKEYS -eq '1') {
+        if ((Get-WidgetEnv 'CLAUDE_WIDGET_HOTKEYS') -eq '1') {
             $hotkeyDefs = @(
                 @{ id = 1; name = 'CLAUDE_WIDGET_KEY_APPROVE'; text = 'Ctrl+Alt+Y'; action = { Send-HotkeyDecision 'allow' } }
                 @{ id = 2; name = 'CLAUDE_WIDGET_KEY_DENY'; text = 'Ctrl+Alt+N'; action = { Send-HotkeyDecision 'deny' } }
@@ -1182,7 +1308,7 @@ try {
                     }
                     $source.AddHook($script:hotkeyHook)
                     foreach ($d in $hotkeyDefs) {
-                        $text = [Environment]::GetEnvironmentVariable($d.name)
+                        $text = Get-WidgetEnv $d.name
                         if (-not $text) { $text = $d.text }
                         $hk = ConvertTo-Hotkey $text
                         if (-not $hk) { Write-Log "hotkey $($d.name): '$text' is not a valid hotkey"; continue }
@@ -1199,12 +1325,70 @@ try {
         }
     }
 
-    # Pulsing dot while a request or question is waiting
-    foreach ($dot in $ui.ReqDot, $ui.QDot) {
+    # Pulsing dot while a request or question is waiting (and while the Telegram setup waits for your /start)
+    foreach ($dot in $ui.ReqDot, $ui.QDot, $ui.TgWaitDot) {
         $pulse = [System.Windows.Media.Animation.DoubleAnimation]::new(1.0, 0.3, [System.Windows.Duration]::new([TimeSpan]::FromMilliseconds(850)))
         $pulse.AutoReverse = $true
         $pulse.RepeatBehavior = [System.Windows.Media.Animation.RepeatBehavior]::Forever
         $dot.BeginAnimation([System.Windows.UIElement]::OpacityProperty, $pulse)
+    }
+
+    # ---------------- Connecting Telegram (setup card) ----------------
+    # Right-click > Telegram > Connect Telegram... opens it: token (getMe) -> start (/start <code> by getUpdates) -> done.
+    # $script:setup is the card's state, $null when closed: @{ step; token; bot; code; name; error; busy; polling;
+    # stopped; nextPollAt; focusUntil }. Nothing is saved before the right /start arrives; Cancel just forgets it.
+    # The Bot API calls are under "Telegram alerts" (they share the sender's one-call-at-a-time rule).
+    $script:setup = $null
+
+    # The pasted token without spaces, line breaks or quotes around it (a token has none of them)
+    function Get-SetupToken {
+        $quotes = [char[]]@([char]0x22, [char]0x27, [char]0x60, [char]0x2018, [char]0x2019, [char]0x201C, [char]0x201D)
+        return ($ui.TgToken.Text -replace '\s', '').Trim($quotes)
+    }
+    function Get-SetupLink { return 'https://t.me/{0}?start={1}' -f $script:setup.bot, $script:setup.code }
+
+    # Draws the current step
+    function Set-SetupStep {
+        $st = $script:setup
+        if (-not $st) { return }
+        $ui.TgStepOf.Text = $S.tgStepOf -f $(switch ($st.step) { 'token' { 1 } 'start' { 2 } default { 3 } })
+        $ui.TgStepToken.Visibility = if ($st.step -eq 'token') { 'Visible' } else { 'Collapsed' }
+        $ui.TgStepStart.Visibility = if ($st.step -eq 'start') { 'Visible' } else { 'Collapsed' }
+        $ui.TgStepDone.Visibility = if ($st.step -eq 'done') { 'Visible' } else { 'Collapsed' }
+        $ui.TgNext.Visibility = $ui.TgStepToken.Visibility
+        $ui.TgOpenBot.Visibility = $ui.TgStepStart.Visibility
+        $ui.TgPhoneHint.Visibility = $ui.TgStepStart.Visibility
+        $ui.TgFinish.Visibility = $ui.TgStepDone.Visibility
+        $ui.TgCancel.Visibility = if ($st.step -ne 'done') { 'Visible' } else { 'Collapsed' }
+        $ui.TgNext.Content = if ($st.busy) { $S.tgChecking } else { $S.tgNext }
+        $ok = -not $st.busy -and (Get-SetupToken).Length -gt 0
+        $ui.TgNext.IsEnabled = $ok
+        $ui.TgNext.Opacity = if ($ok) { 1.0 } else { 0.45 }
+        $ui.TgError.Text = [string]$st.error
+        $ui.TgError.Visibility = if ($st.error) { 'Visible' } else { 'Collapsed' }
+        if ($st.step -eq 'start') {
+            $ui.TgBotFound.Text = $S.tgBotFound -f $st.bot
+            $ui.TgPhoneHint.Text = $S.tgPhoneHint -f $st.code, $st.bot
+            # Where the button goes (only when it changed: replacing an open tooltip would close it)
+            $link = Get-SetupLink
+            if ($ui.TgOpenBot.ToolTip -ne $link) { $ui.TgOpenBot.ToolTip = $link }
+        }
+        if ($st.step -eq 'done') {
+            $ui.TgStep3Title.Text = $S.tgStep3Title -f $st.name
+            $ui.TgStep3Text.Text = $S.tgStep3Text -f [int]$script:prefs.notifyAfter
+        }
+    }
+
+    function Show-Setup {
+        $script:current = $null
+        $script:currentDone = $null
+        Set-Panel 'PanelTelegram'
+        # Right after you picked Connect: the token box takes the focus (not when the card comes back after a request)
+        $st = $script:setup
+        if ($st.step -eq 'token' -and $st.focusUntil -and (Get-NowMs) -lt $st.focusUntil) {
+            $st.focusUntil = 0
+            Enable-Typing $ui.TgToken
+        }
     }
 
     # ---------------- README screenshots (-RenderSamples) ----------------
@@ -1279,9 +1463,384 @@ try {
         $d | Add-Member -NotePropertyName created -NotePropertyValue ($now - 2 * 60000) -Force
         Show-DoneStack @($d)
         Save-Png $frame (Join-Path $OutDir 'done.png')
+
+        # The Telegram setup card, one picture per step
+        $tg = $sample.telegram
+        if ($tg) {
+            $script:setup = @{ step = 'token'; bot = [string]$tg.bot; code = '3f9a1c07b2e4d856'; name = [string]$tg.name; error = ''; busy = $false }
+            $ui.TgToken.Text = [string]$tg.token
+            foreach ($step in 'token', 'start', 'done') {
+                $script:setup.step = $step
+                Set-SetupStep
+                Show-Setup
+                Save-Png $frame (Join-Path $OutDir "telegram-$step.png")
+            }
+            $script:setup = $null
+        }
     }
 
     if ($RenderMode) { Export-Samples; return }
+
+    # ---------------- Telegram alerts ----------------
+    # hook.ps1 leaves the alert files of common.ps1 in the queue; the widget sends them. Every Bot API call runs in
+    # a background runspace that the timer polls, one call at a time: the UI thread never waits on the network.
+    # What goes out is recorded in telegram-sent.json before the call, so a restart or a second widget never sends
+    # it twice (an alert lost to a crash in the middle of a send is the lesser evil).
+    $TelegramScript = Join-Path $PSScriptRoot 'telegram.ps1'
+    # Alerts that become due within this time of the first one go out as one message
+    $TgBatchMs = 5000
+    $script:tgCall = $null       # the call running: @{ kind (send|edit); call; token; and for a send alertKeys, entries, text, files, tries }
+    $script:tgRetry = $null      # a send that failed in a way that may pass, tried again on the next round
+    $script:tgBatchSince = 0     # when the first alert of the batch being collected became due
+
+    # Calls a telegram.ps1 function in a runspace of its own. PowerShell classes (TelegramError) do not cross
+    # runspaces, so the runspace loads telegram.ps1 itself and hands back a plain hashtable: Receive-TelegramCall.
+    function Start-TelegramCall([string]$Function, [object[]]$Arguments) {
+        $ps = [powershell]::Create()
+        [void]$ps.AddScript({
+                param($Script, $Function, $Arguments, $BaseUrl)
+                . $Script
+                try { @{ ok = $true; result = (& $Function @Arguments -BaseUrl $BaseUrl) } }
+                catch {
+                    $e = $_.Exception
+                    @{ ok = $false; status = [int]$e.Status; description = $(if ($e.Description) { [string]$e.Description } else { $e.Message }) }
+                }
+            }).AddArgument($TelegramScript).AddArgument($Function).AddArgument($Arguments).AddArgument($TelegramUrl)
+        return @{ ps = $ps; handle = $ps.BeginInvoke(); started = Get-NowMs }
+    }
+
+    # A runspace that never ends (a DNS lookup that hangs ignores the call's own timeout) would hold the one call
+    # slot forever: past $TelegramCallMaxSecs the call is given up on and ends as a timeout (status 0, so the retry
+    # rules apply). It is stopped without waiting (Stop() would block the UI thread on the stuck call) and
+    # disposed once that stop completes: $script:tgStopping, emptied by Clear-TelegramStopped.
+    $script:tgStopping = New-Object System.Collections.ArrayList
+    function Test-TelegramCallDone($Call) {
+        if ($Call.handle.IsCompleted) { return $true }
+        if ((Get-NowMs) - [int64]$Call.started -lt [int64]$TelegramCallMaxSecs * 1000) { return $false }
+        $Call.timedOut = $true
+        return $true
+    }
+    function Clear-TelegramStopped {
+        foreach ($z in @($script:tgStopping)) {
+            if (-not $z.stop.IsCompleted) { continue }
+            try { $z.ps.EndStop($z.stop) } catch {}
+            try { $z.ps.Dispose() } catch {}
+            $script:tgStopping.Remove($z)
+        }
+    }
+
+    # The outcome of a finished call: @{ ok = $true; result } or @{ ok = $false; status; description }
+    function Receive-TelegramCall($Call) {
+        if ($Call.timedOut) {
+            try { [void]$script:tgStopping.Add(@{ ps = $Call.ps; stop = $Call.ps.BeginStop($null, $null) }) } catch {}
+            return @{ ok = $false; status = 0; description = 'timeout' }
+        }
+        try {
+            $out = @($Call.ps.EndInvoke($Call.handle))
+            if ($out.Count -gt 0 -and $out[-1] -is [hashtable]) { return $out[-1] }
+            return @{ ok = $false; status = 0; description = 'no result' }
+        }
+        catch { return @{ ok = $false; status = 0; description = $_.Exception.Message } }
+        finally { $Call.ps.Dispose() }
+    }
+
+    function Write-TelegramFailure($Result, [string]$Token) {
+        Write-Log ('telegram: {0} {1}' -f $Result.status, (Hide-TelegramToken ([string]$Result.description) $Token))
+    }
+
+    # ---- Calls the menu and the setup card make ----
+    # Same one-call-at-a-time rule as the alerts: a queued call starts only while no alert call runs, and no alert call
+    # starts while one of these runs. The longest is the setup's getUpdates long poll (20 s), only while not connected,
+    # that is while no alert can go out anyway.
+    $script:tgUiQueue = New-Object System.Collections.ArrayList   # @{ kind; function; arguments; setup }, oldest first
+    $script:tgUiCall = $null     # the one running, with its call
+    function Request-TelegramUiCall([string]$Kind, [string]$Function, [object[]]$Arguments) {
+        [void]$script:tgUiQueue.Add(@{ kind = $Kind; function = $Function; arguments = $Arguments; setup = $script:setup })
+    }
+
+    # What to tell you about a failed call, by its status (never by Telegram's text)
+    function Get-TelegramErrorText($Result) {
+        switch ([int]$Result.status) {
+            0 { return $S.tgErrNetwork }
+            401 { return $S.tgErrBadToken }
+            # (a token that is not even shaped like one)
+            404 { return $S.tgErrBadToken }
+            403 { return $S.tgErrBlocked }
+            409 { return $S.tgErrWebhook }
+        }
+        return $S.tgErrOther -f $Result.status, $Result.description
+    }
+
+    # A short note over the widget for about 3 s (the result of Send test or Disconnect)
+    $script:noteTip = $null
+    function Show-TelegramNote([string]$Text) {
+        if (-not $script:noteTip) {
+            $script:noteTip = New-Object System.Windows.Controls.ToolTip
+            $script:noteTip.PlacementTarget = $ui.Card
+            $script:noteTip.Placement = 'Top'
+            $script:noteTimer = New-Object System.Windows.Threading.DispatcherTimer
+            $script:noteTimer.Interval = [TimeSpan]::FromSeconds(3)
+            $script:noteTimer.Add_Tick({ param($sender, $e) $sender.Stop(); $script:noteTip.IsOpen = $false })
+        }
+        $script:noteTip.Content = $Text
+        $script:noteTip.IsOpen = $true
+        $script:noteTimer.Stop()
+        $script:noteTimer.Start()
+    }
+
+    function Send-TelegramTest {
+        if (@($script:tgUiQueue | Where-Object { $_.kind -eq 'test' }).Count -gt 0 -or ($script:tgUiCall -and $script:tgUiCall.kind -eq 'test')) { return }
+        $cfg = Read-TelegramConfig $Data
+        if (-not $cfg) { Show-TelegramNote $S.tgErrBadToken; return }
+        Request-TelegramUiCall 'test' 'Send-TelegramText' @($cfg.token, $cfg.chat, $S.tgTest)
+    }
+
+    # Remove-TelegramConfig reports nothing: whether telegram.json is really gone is checked here
+    function Disconnect-Telegram {
+        Remove-TelegramConfig $Data
+        Set-Pref 'telegram' $false
+        if (Test-Path -LiteralPath (Join-Path $Data 'telegram.json')) {
+            Write-Log 'telegram: could not delete telegram.json'
+            Show-TelegramNote $S.tgErrDisconnect
+        }
+    }
+
+    function Start-Setup {
+        if (-not $script:setup) {
+            $script:setup = @{ step = 'token'; token = ''; bot = ''; code = ''; name = ''; error = ''; busy = $false
+                polling = $false; stopped = $false; nextPollAt = 0; focusUntil = 0 }
+            $ui.TgToken.Text = ''
+        }
+        $script:setup.focusUntil = (Get-NowMs) + 2000
+        Set-SetupStep
+        Update-View
+    }
+    # Cancel, and Done once connected: the card goes (a call still running for it is ignored when it ends)
+    function Close-Setup {
+        $script:setup = $null
+        # The token must not stay in the hidden box (Complete-Setup already cleared it when connected)
+        $ui.TgToken.Text = ''
+        Disable-Typing
+        Update-View
+    }
+    function Submit-SetupToken {
+        $st = $script:setup
+        if (-not $st -or $st.step -ne 'token' -or $st.busy) { return }
+        $token = Get-SetupToken
+        if (-not $token) { return }
+        $st.token = $token
+        $st.busy = $true
+        $st.error = ''
+        Set-SetupStep
+        Request-TelegramUiCall 'getMe' 'Get-TelegramBot' @($token)
+    }
+    # The one-time code of the "Open my bot" link: whoever sends "/start <code>" to the bot is the one bound
+    function New-SetupCode {
+        $bytes = New-Object byte[] 8
+        $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+        try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
+        return (($bytes | ForEach-Object { $_.ToString('x2') }) -join '')
+    }
+    # The right /start arrived: save, alerts on, test message
+    function Complete-Setup($Found) {
+        $st = $script:setup
+        if (-not (Save-TelegramConfig $Data $st.token ([string]$Found.chat) $st.bot ([string]$Found.name))) {
+            $st.error = $S.tgErrSave
+            $st.stopped = $true
+            Set-SetupStep
+            return
+        }
+        Set-Pref 'telegram' $true
+        Request-TelegramUiCall 'send' 'Send-TelegramText' @($st.token, [string]$Found.chat, $S.tgTest)
+        # Saved encrypted now: no plain copy stays in the setup state or in the hidden token box
+        $st.token = ''
+        $ui.TgToken.Text = ''
+        $st.name = [string]$Found.name
+        $st.step = 'done'
+        $st.error = ''
+        Set-SetupStep
+    }
+
+    function Complete-TelegramUiCall($Job, $Result) {
+        $st = $Job.setup
+        $current = $st -and [object]::ReferenceEquals($st, $script:setup)
+        if (-not $Result.ok) { Write-TelegramFailure $Result ([string]$Job.arguments[0]) }
+        switch ($Job.kind) {
+            'getMe' {
+                if (-not $current) { return }
+                $st.busy = $false
+                if ($Result.ok) {
+                    $st.bot = [string]$Result.result.username
+                    $st.code = New-SetupCode
+                    $st.step = 'start'
+                    $st.error = ''
+                    $st.nextPollAt = 0
+                    Disable-Typing
+                }
+                else { $st.error = Get-TelegramErrorText $Result }
+                Set-SetupStep
+            }
+            'poll' {
+                if (-not $current) { return }
+                $st.polling = $false
+                if ($st.step -ne 'start') { return }
+                if ($Result.ok -and $Result.result) { Complete-Setup $Result.result; return }
+                if ($Result.ok) { $st.error = ''; $st.nextPollAt = (Get-NowMs) + 1000 }
+                # A token that stopped working, or a bot with a webhook (getUpdates refused): back to step 1
+                elseif ([int]$Result.status -in @(401, 404, 409)) { $st.step = 'token'; $st.error = Get-TelegramErrorText $Result }
+                # No network and the like: say so, and try again a bit later
+                else { $st.error = Get-TelegramErrorText $Result; $st.nextPollAt = (Get-NowMs) + 3000 }
+                Set-SetupStep
+            }
+            'send' {
+                if (-not $Result.ok -and $current -and $st.step -eq 'done') { $st.error = Get-TelegramErrorText $Result; Set-SetupStep }
+            }
+            'test' { Show-TelegramNote $(if ($Result.ok) { $S.tgTestOk } else { Get-TelegramErrorText $Result }) }
+        }
+    }
+
+    # Every tick: ends the call that finished, keeps the setup's long poll going, starts the next queued call
+    function Update-TelegramUi {
+        if ($script:tgUiCall) {
+            if (-not (Test-TelegramCallDone $script:tgUiCall.call)) { return }
+            $job = $script:tgUiCall
+            $script:tgUiCall = $null
+            Complete-TelegramUiCall $job (Receive-TelegramCall $job.call)
+        }
+        $st = $script:setup
+        if ($st -and $st.step -eq 'start' -and -not $st.polling -and -not $st.stopped -and (Get-NowMs) -ge $st.nextPollAt) {
+            $st.polling = $true
+            Request-TelegramUiCall 'poll' 'Find-TelegramStart' @($st.token, $st.code, [int64]0, 20)
+        }
+        if ($script:tgCall) { return }
+        while ($script:tgUiQueue.Count -gt 0) {
+            $job = $script:tgUiQueue[0]
+            $script:tgUiQueue.RemoveAt(0)
+            # The setup it was for was cancelled meanwhile
+            if ($job.kind -in @('getMe', 'poll') -and -not [object]::ReferenceEquals($job.setup, $script:setup)) { continue }
+            $job.call = Start-TelegramCall $job.function $job.arguments
+            $script:tgUiCall = $job
+            return
+        }
+    }
+
+    $ui.TgOpenBotFather.Add_Click({ try { Start-Process 'https://t.me/BotFather' } catch { Write-Log $_ } })
+    $ui.TgNext.Add_Click({ Submit-SetupToken })
+    $ui.TgOpenBot.Add_Click({ if ($script:setup) { try { Start-Process (Get-SetupLink) } catch { Write-Log $_ } } })
+    $ui.TgFinish.Add_Click({ Close-Setup })
+    $ui.TgCancel.Add_Click({ Close-Setup })
+    $ui.TgToken.Add_TextChanged({ if ($script:setup -and $script:setup.step -eq 'token') { $script:setup.error = ''; Set-SetupStep } })
+    $ui.TgToken.Add_KeyDown({ param($src, $e) if ($e.Key -eq 'Return') { $e.Handled = $true; Submit-SetupToken } })
+    # The card came back after a request: clicking the box lets you type again
+    $ui.TgToken.Add_PreviewMouseLeftButtonDown({ if ($script:setup -and $script:setup.step -eq 'token') { Enable-Typing $ui.TgToken } })
+
+    function Send-AlertBatch($Job, $Config) {
+        $Job.kind = 'send'
+        $Job.token = $Config.token
+        $Job.call = Start-TelegramCall 'Send-TelegramText' @($Config.token, $Config.chat, $Job.text)
+        $script:tgCall = $Job
+    }
+
+    # A call ended. A delivered batch keeps its message id (for the resolved edit) and its outbox files go. A send
+    # that failed in a way that may pass (Test-TelegramRetryable) is tried once more on the next round; otherwise,
+    # or after that, it is logged and dropped: its keys stay, so it never goes out late.
+    function Complete-TelegramCall {
+        $job = $script:tgCall
+        $script:tgCall = $null
+        $r = Receive-TelegramCall $job.call
+        if ($job.kind -eq 'edit') {
+            if (-not $r.ok) { Write-TelegramFailure $r $job.token }
+            return
+        }
+        if ($r.ok) {
+            $sent = Read-SentAlerts $Data
+            foreach ($k in $job.alertKeys) {
+                $e = $job.entries[$k]
+                $e.message = [int64]$r.result
+                $sent[$k] = $e
+            }
+            if (-not (Save-SentAlerts $Data $sent)) { Write-Log 'telegram: could not save telegram-sent.json' }
+        }
+        elseif ($job.tries -lt 2 -and (Test-TelegramRetryable ([int]$r.status))) { $job.tries++; $script:tgRetry = $job; return }
+        else { Write-TelegramFailure $r $job.token }
+        foreach ($f in $job.files) { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue }
+    }
+
+    # Every ~2 s from the timer, before Update-View: that one stops in do not disturb, these alerts do not
+    function Update-Alerts {
+        Clear-TelegramStopped
+        if ($script:tgCall) {
+            if (-not (Test-TelegramCallDone $script:tgCall.call)) { return }
+            Complete-TelegramCall
+        }
+        # One call at a time: a menu or setup call is running
+        if ($script:tgUiCall) { return }
+        if (-not (Test-TelegramReady $Data $script:prefs)) {
+            $script:tgRetry = $null
+            $script:tgBatchSince = 0
+            $script:tgClosed.Clear()
+            return
+        }
+        if ($script:tgRetry) {
+            $job = $script:tgRetry
+            $script:tgRetry = $null
+            $cfg = Read-TelegramConfig $Data
+            if ($cfg) { Send-AlertBatch $job $cfg } else { Write-Log 'telegram: cannot read telegram.json' }
+            return
+        }
+
+        $now = Get-NowMs
+        Remove-OldAlertFiles $Queue $now
+        $seen = Get-SeenStamps $Queue
+        $sent = Read-SentAlerts $Data
+        # Get-DueAlerts is pure: outbox entries already sent, stale or answered meanwhile are deleted here
+        $outbox = New-Object System.Collections.ArrayList
+        foreach ($e in @(Read-AlertFiles $Queue 'tg')) {
+            if ($sent.ContainsKey("req:$($e.id)") -or ($now - [int64]$e.created) -gt 30 * 60 * 1000 -or @(Select-UnseenAlerts @($e) $seen).Count -eq 0) {
+                Remove-Item -LiteralPath $e.file -Force -ErrorAction SilentlyContinue
+            }
+            else { [void]$outbox.Add($e) }
+        }
+        $waits = @(Select-UnseenAlerts @(Read-AlertFiles $Queue 'wait') $seen)
+        $notices = @(Select-UnseenAlerts @(Get-Done) $seen)
+        $away = (Get-IdleSeconds) -ge $AwaySecs
+        $afterMs = [int64]$script:prefs.notifyAfter * 60000
+        # Notices are deleted at closeAfter: due 15 s before that when it comes first, or one would be gone before it alerts
+        $due = @(Get-DueAlerts $outbox $notices $waits $sent $now $afterMs $away (Test-Dnd $Data) -NoticeAfterMs (Get-NoticeAlertMs $script:prefs))
+
+        if ($due.Count -eq 0) { $script:tgBatchSince = 0 }
+        elseif ($script:tgBatchSince -eq 0) { $script:tgBatchSince = $now }
+        elseif ($now - $script:tgBatchSince -ge $TgBatchMs) {
+            $cfg = Read-TelegramConfig $Data
+            if (-not $cfg) { Write-Log 'telegram: cannot read telegram.json'; return }
+            $script:tgBatchSince = 0
+            $job = @{ entries = @{}; text = (Format-AlertText $due $S); tries = 1 }
+            foreach ($a in $due) {
+                $entry = @{ message = $null; session = [string]$a.session; at = $now; resolved = $false; text = $job.text; edited = $false }
+                $job.entries[$a.key] = $entry
+                $sent[$a.key] = $entry
+            }
+            $job.alertKeys = @($job.entries.Keys)
+            # Recorded first: what could not be recorded is not sent (a restart would send it again)
+            if (-not (Save-SentAlerts $Data $sent)) { Write-Log 'telegram: could not save telegram-sent.json'; return }
+            $job.files = @($outbox | Where-Object { $job.entries.ContainsKey("req:$($_.id)") } | ForEach-Object { $_.file })
+            Send-AlertBatch $job $cfg
+            return
+        }
+
+        # Resolved: at most one edit per round, the next message on a later round
+        if (Update-ResolvedAlerts $sent $seen $script:tgClosed) { [void](Save-SentAlerts $Data $sent) }
+        $script:tgClosed.Clear()
+        $edit = Get-ResolvedEdit $sent
+        if (-not $edit) { return }
+        $cfg = Read-TelegramConfig $Data
+        if (-not $cfg) { Write-Log 'telegram: cannot read telegram.json'; return }
+        # Marked first, like a send: an edit is tried once, never in a loop
+        foreach ($k in $edit.alertKeys) { $sent[$k].edited = $true }
+        if (-not (Save-SentAlerts $Data $sent)) { Write-Log 'telegram: could not save telegram-sent.json'; return }
+        $script:tgCall = @{ kind = 'edit'; token = $cfg.token
+            call = Start-TelegramCall 'Edit-TelegramText' @($cfg.token, $cfg.chat, $edit.message, (Format-ResolvedText $edit.text $S.tgResolved)) }
+    }
 
     $timer = New-Object System.Windows.Threading.DispatcherTimer
     $timer.Interval = [TimeSpan]::FromMilliseconds(400)
@@ -1294,6 +1853,10 @@ try {
             return
         }
         try { Sync-Dnd } catch { Write-Log $_ }
+        try { Close-SeenNotices } catch { Write-Log $_ }
+        # (before the alerts: a call you are waiting for gets the free slot first)
+        try { Update-TelegramUi } catch { Write-Log $_ }
+        if ($script:ticks % 5 -eq 0) { try { Update-Alerts } catch { Write-Log $_ } }
         try { Update-View } catch { Write-Log $_ }
         # Every ~2 s: a monitor unplugged or back, a resolution change, the taskbar moved
         $script:ticks++

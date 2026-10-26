@@ -360,3 +360,189 @@ Describe 'ConvertTo-UpdatedPermission and New-PermissionOutput' {
         ConvertTo-AsciiJson $out | Should -BeExactly '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow","updatedPermissions":[{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"git *"}],"behavior":"allow","destination":"session"}]}}}'
     }
 }
+
+Describe 'Get-RequestTimeout' {
+    AfterEach { Remove-Item Env:\CLAUDE_WIDGET_WAIT_SECS -ErrorAction SilentlyContinue }
+    It 'is closeAfter minutes in seconds, whatever notifyAfter is (<minutes> -> <seconds>)' -ForEach @(
+        @{ minutes = 1; seconds = 60 }, @{ minutes = 3; seconds = 180 }, @{ minutes = 5; seconds = 300 }, @{ minutes = 30; seconds = 1800 }) {
+        Get-RequestTimeout @{ closeAfter = $minutes; notifyAfter = 1 } | Should -Be $seconds
+    }
+    It 'is the hook limit of 3600 s for Never' {
+        Get-RequestTimeout @{ closeAfter = 0; notifyAfter = 5 } | Should -Be 3600
+    }
+    It 'takes the tests-only CLAUDE_WIDGET_WAIT_SECS override' {
+        $env:CLAUDE_WIDGET_WAIT_SECS = '2'
+        Get-RequestTimeout @{ closeAfter = 5; notifyAfter = 5 } | Should -Be 2
+    }
+}
+
+Describe 'Get-AlertSecs' {
+    AfterEach { Remove-Item Env:\CLAUDE_WIDGET_ALERT_SECS -ErrorAction SilentlyContinue }
+    It 'is notifyAfter minutes in seconds (<minutes> -> <seconds>)' -ForEach @(
+        @{ minutes = 1; seconds = 60 }, @{ minutes = 3; seconds = 180 }, @{ minutes = 5; seconds = 300 }) {
+        Get-AlertSecs @{ closeAfter = 0; notifyAfter = $minutes } | Should -Be $seconds
+    }
+    It 'takes the tests-only CLAUDE_WIDGET_ALERT_SECS override' {
+        $env:CLAUDE_WIDGET_ALERT_SECS = '1'
+        Get-AlertSecs @{ notifyAfter = 5 } | Should -Be 1
+    }
+}
+
+Describe 'hooks.json' {
+    It 'gives <name> more time than the longest wait for an answer (3600 s)' -ForEach @(@{ name = 'PermissionRequest' }, @{ name = 'PreToolUse' }) {
+        $json = [IO.File]::ReadAllText((Join-Path (Split-Path -Parent $PSScriptRoot) 'plugins\opaiva-code-widget\hooks\hooks.json')) | ConvertFrom-Json
+        $json.hooks.$name[0].hooks[0].timeout | Should -Be 3630
+    }
+}
+
+Describe 'Wait-Response alert at notifyAfter' {
+    BeforeAll { $alertItem = @{ kind = 'permission'; session = 'unit-w1'; cwd = 'C:/p'; title = 'T'; detail = 'Bash: ls' } }
+    BeforeEach {
+        Mock Test-Widget { $true }
+        Mock Test-Dnd { $false }
+        Mock Send-RequestAlert {}
+    }
+    It 'queues one alert while you are present and keeps waiting until the close time' {
+        Mock Test-Away { $false }
+        $clock = [Diagnostics.Stopwatch]::StartNew()
+        Wait-Response 'unit-none' 4 1 $alertItem 'tag' | Should -BeNullOrEmpty
+        $clock.Elapsed.TotalSeconds | Should -BeGreaterThan 3.5
+        $script:waitEnd | Should -BeExactly 'timeout'
+        $script:alertQueued | Should -BeTrue
+        Should -Invoke Send-RequestAlert -Times 1 -Exactly -ParameterFilter { $Why -eq 'unanswered' -and $Alert.session -eq 'unit-w1' }
+    }
+    It 'hands the card over when you are away at that moment' {
+        Mock Test-Away { $true }
+        $clock = [Diagnostics.Stopwatch]::StartNew()
+        Wait-Response 'unit-none' 30 1 $alertItem 'tag' | Should -BeNullOrEmpty
+        $clock.Elapsed.TotalSeconds | Should -BeLessThan 10
+        $script:waitEnd | Should -BeExactly 'idle'
+        $script:alertQueued | Should -BeTrue
+        Should -Invoke Send-RequestAlert -Times 1 -Exactly -ParameterFilter { $Why -eq 'unanswered' }
+    }
+    It 'does not alert by itself when the close time comes first or at the same time' {
+        Mock Test-Away { $false }
+        Wait-Response 'unit-none' 2 2 $alertItem 'tag' | Should -BeNullOrEmpty
+        $script:waitEnd | Should -BeExactly 'timeout'
+        $script:alertQueued | Should -BeFalse
+        Should -Invoke Send-RequestAlert -Times 0 -Exactly
+    }
+    It 'does not alert without Telegram (no alert item)' {
+        Mock Test-Away { $false }
+        Wait-Response 'unit-none' 3 1 $null 'tag' | Should -BeNullOrEmpty
+        $script:alertQueued | Should -BeFalse
+        Should -Invoke Send-RequestAlert -Times 0 -Exactly
+    }
+}
+
+Describe 'Get-NotificationWaitKind' {
+    It 'is <kind> for <type>' -ForEach @(
+        @{ type = 'permission_prompt'; kind = 'permission' }
+        @{ type = 'elicitation_dialog'; kind = 'question' }
+        @{ type = 'elicitation_url_dialog'; kind = 'question' }) {
+        Get-NotificationWaitKind $type | Should -BeExactly $kind
+    }
+    It 'is nothing for <type>' -ForEach @(
+        @{ type = 'idle_prompt' }, @{ type = 'auth_success' }, @{ type = 'agent_needs_input' }, @{ type = 'elicitation_complete' }, @{ type = '' }) {
+        Get-NotificationWaitKind $type | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'Test-RequestPending' {
+    BeforeEach {
+        $q = Join-Path ([IO.Path]::GetTempPath()) ('ccw-q-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $q | Out-Null
+    }
+    AfterEach { Remove-Item -LiteralPath $q -Recurse -Force -ErrorAction SilentlyContinue }
+    It 'finds a request of that session only' {
+        Write-JsonAtomic (Join-Path $q 'req-1.json') @{ id = '1'; session = 'abc' }
+        Test-RequestPending $q 'abc' | Should -BeTrue
+        Test-RequestPending $q 'other' | Should -BeFalse
+    }
+    It 'is false without a queue folder or a session' {
+        Test-RequestPending (Join-Path $q 'missing') 'abc' | Should -BeFalse
+        Test-RequestPending $q '' | Should -BeFalse
+    }
+    It 'skips a request file it cannot read' {
+        [IO.File]::WriteAllText((Join-Path $q 'req-bad.json'), 'not json')
+        Test-RequestPending $q 'abc' | Should -BeFalse
+    }
+}
+
+Describe 'Get-AlertAction' {
+    It 'is <action> for decision "<decision>" / waitEnd "<waitEnd>"' -ForEach @(
+        @{ decision = 'vscode'; waitEnd = ''; action = 'wait' }
+        @{ decision = 'allow'; waitEnd = ''; action = $null }
+        @{ decision = 'deny'; waitEnd = ''; action = $null }
+        @{ decision = 'answer'; waitEnd = ''; action = $null }
+        @{ decision = ''; waitEnd = 'timeout'; action = 'timeout' }
+        @{ decision = ''; waitEnd = 'idle'; action = 'idle' }
+        @{ decision = ''; waitEnd = 'session ended'; action = $null }
+        @{ decision = ''; waitEnd = 'widget closed'; action = 'wait' }
+        @{ decision = ''; waitEnd = 'do not disturb'; action = 'wait' }) {
+        $res = if ($decision) { [pscustomobject]@{ decision = $decision } } else { $null }
+        Get-AlertAction $res $waitEnd | Should -Be $action
+    }
+}
+
+Describe 'Invoke-Hook on the paths that skip the widget' {
+    BeforeAll {
+        $queueDir = Join-Path $tmpData 'queue'
+        function New-TestEvent([string]$Kind) {
+            $json = if ($Kind -eq 'question') {
+                '{"hook_event_name":"PreToolUse","session_id":"unit-s1","cwd":"C:/p","transcript_path":"C:/p/t.jsonl","tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"Q?","header":"Q","multiSelect":false,"options":[{"label":"A","description":""}]}]}}'
+            } else {
+                '{"hook_event_name":"PermissionRequest","session_id":"unit-s1","cwd":"C:/p","transcript_path":"C:/p/t.jsonl","tool_name":"Bash","tool_input":{"command":"ls"}}'
+            }
+            return $json | ConvertFrom-Json
+        }
+    }
+    AfterEach {
+        Set-Dnd $tmpData $false
+        Remove-Item -LiteralPath (Join-Path $tmpData 'telegram.json'), (Join-Path $tmpData 'prefs.json') -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $queueDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    Context 'without Telegram: no transcript read (the title is only read for the widget card)' {
+        It 'do not disturb' {
+            Mock Get-SessionTitle { 'x' }
+            Set-Dnd $tmpData $true
+            foreach ($k in 'permission', 'question') { Invoke-Hook (New-TestEvent $k) | Should -BeNullOrEmpty }
+            Should -Invoke Get-SessionTitle -Times 0 -Exactly
+        }
+        It 'away' {
+            Mock Get-SessionTitle { 'x' }
+            Mock Test-Away { $true }
+            Mock Start-Widget { $true }
+            foreach ($k in 'permission', 'question') { Invoke-Hook (New-TestEvent $k) | Should -BeNullOrEmpty }
+            Should -Invoke Get-SessionTitle -Times 0 -Exactly
+            Should -Invoke Start-Widget -Times 0 -Exactly
+        }
+        It 'the widget did not start' {
+            Mock Get-SessionTitle { 'x' }
+            Mock Test-Away { $false }
+            Mock Start-Widget { $false }
+            foreach ($k in 'permission', 'question') { Invoke-Hook (New-TestEvent $k) | Should -BeNullOrEmpty }
+            Should -Invoke Get-SessionTitle -Times 0 -Exactly
+        }
+    }
+
+    Context 'with Telegram' {
+        BeforeEach {
+            [IO.File]::WriteAllText((Join-Path $tmpData 'telegram.json'), '{}')
+            [IO.File]::WriteAllText((Join-Path $tmpData 'prefs.json'), '{"telegram":true,"notifyAfter":1}')
+        }
+        It 'away: queues the alert first, then launches the widget without waiting for it' {
+            Mock Get-SessionTitle { 'T' }
+            Mock Test-Away { $true }
+            # Throws (failing the hook) if the widget were started before the entry is on disk
+            Mock Start-Widget { if (@(Get-ChildItem -LiteralPath $queueDir -Filter 'tg-*.json' -ErrorAction SilentlyContinue).Count -eq 0) { throw 'no outbox entry yet' }; $true }
+            Invoke-Hook (New-TestEvent 'permission') | Should -BeNullOrEmpty
+            Should -Invoke Start-Widget -Times 1 -Exactly -ParameterFilter { $NoWait }
+            $tg = [IO.File]::ReadAllText((Get-ChildItem -LiteralPath $queueDir -Filter 'tg-*.json')[0].FullName) | ConvertFrom-Json
+            $tg.title | Should -BeExactly 'T'
+            $tg.reason | Should -BeExactly 'away'
+            ([IO.File]::ReadAllText((Join-Path $queueDir 'alerted-unit-s1.json')) | ConvertFrom-Json).at | Should -BeGreaterThan 0
+        }
+    }
+}

@@ -9,6 +9,8 @@ foreach ($lang in 'en', 'pt') {
     $out = Join-Path $repo "docs\images\$lang"
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $widget -RenderSamples $samples -OutDir $out -Lang $lang
     if ($LASTEXITCODE) { throw "render failed for '$lang'" }
+    # The Telegram wizard steps are rendered too, but the READMEs do not show them
+    Get-ChildItem $out -Filter 'telegram-*.png' | Remove-Item -Force
     Get-ChildItem $out -Filter *.png | ForEach-Object { '{0}\{1}' -f $lang, $_.Name }
 }
 

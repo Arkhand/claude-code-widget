@@ -135,11 +135,22 @@ Describe 'repository rules' {
         $files | Where-Object { $_ -match '\.(ogg|wav)$' } | Should -BeNullOrEmpty
         $files | Where-Object { $_ -match '\.png$' -and $_ -match '(?i)minecraft|dirt|grass|orb|creeper' } | Should -BeNullOrEmpty
     }
-    # Since 2.6.0 (Minecraft theme gone) the widget never uses the network: keep it that way
-    It 'the plugin scripts make no network calls' {
+    # Since 2.7.0 telegram.ps1 is the one file that talks to the network, and only to the Telegram Bot API
+    It 'only telegram.ps1 makes network calls, and only to api.telegram.org' {
         $dir = Join-Path $repo 'plugins\opaiva-code-widget\scripts'
-        $hits = Get-ChildItem -LiteralPath $dir -File | Select-String -Pattern 'HttpWebRequest|WebClient|HttpClient|Invoke-WebRequest|Invoke-RestMethod|Net\.Sockets'
+        $hits = Get-ChildItem -LiteralPath $dir -File | Where-Object { $_.Name -ne 'telegram.ps1' } | Select-String -Pattern 'WebRequest|WebClient|HttpClient|Invoke-WebRequest|Invoke-RestMethod|Net\.Sockets'
         $hits | Should -BeNullOrEmpty
+        # telegram.ps1: every URL is the Bot API (the bare host is the default BaseUrl)
+        $urls = Select-String -LiteralPath (Join-Path $dir 'telegram.ps1') -Pattern 'https?://[^\s''")]+' -AllMatches |
+            ForEach-Object { $_.Matches.Value }
+        $urls | Should -Not -BeNullOrEmpty
+        $urls | Where-Object { $_ -notmatch '^https://api\.telegram\.org($|/)' } | Should -BeNullOrEmpty
+    }
+    # The Telegram setup wizard opens links in the user's browser (Start-Process); that is not a network call of ours
+    It 'widget.ps1 opens only t.me links, apart from the Bot API default and the XAML namespace' {
+        $urls = Select-String -LiteralPath (Join-Path $repo 'plugins\opaiva-code-widget\scripts\widget.ps1') -Pattern 'https?://[^\s''")]+' -AllMatches |
+            ForEach-Object { $_.Matches.Value }
+        $urls | Where-Object { $_ -notmatch '^https://t\.me/' -and $_ -notmatch '^https://api\.telegram\.org($|/)' -and $_ -ne 'http://schemas.microsoft.com/winfx/2006/xaml' } | Should -BeNullOrEmpty
     }
     It 'widget.ps1 has no handler parameter named like the strings table ($S)' {
         $text = [IO.File]::ReadAllText((Join-Path $repo 'plugins\opaiva-code-widget\scripts\widget.ps1'))
