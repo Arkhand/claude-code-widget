@@ -421,10 +421,15 @@ function Get-DefaultPrefs { @{ theme = 'dark'; opacity = 1.0; volume = 100; scal
 function Read-Prefs([string]$Dir) {
     $p = Get-DefaultPrefs
     $j = $null
-    try {
-        $path = Join-Path $Dir 'prefs.json'
-        if (Test-Path -LiteralPath $path) { $j = [IO.File]::ReadAllText($path, (Get-Utf8NoBom)) | ConvertFrom-Json }
-    } catch { return $p }
+    $path = Join-Path $Dir 'prefs.json'
+    # Save-Prefs swaps the file in with one rename, but a reader can still find it locked for a moment then:
+    # try again shortly instead of falling back to the defaults (Telegram off). A missing file is the defaults.
+    $text = $null
+    for ($try = 1; $try -le 5 -and $null -eq $text; $try++) {
+        if (-not (Test-Path -LiteralPath $path)) { break }
+        try { $text = [IO.File]::ReadAllText($path, (Get-Utf8NoBom)) } catch { if ($try -lt 5) { Start-Sleep -Milliseconds 20 } }
+    }
+    try { if ($null -ne $text) { $j = $text | ConvertFrom-Json } } catch { return $p }
     if ($null -eq $j) { return $p }
     $num = {
         param($v)
@@ -464,8 +469,15 @@ function Save-Prefs([string]$Dir, $Prefs) {
         $path = Join-Path $Dir 'prefs.json'
         # Whole file at once: a crash in the middle never leaves half a prefs.json
         [IO.File]::WriteAllText("$path.tmp", ($o | ConvertTo-Json -Compress), (Get-Utf8NoBom))
-        if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
-        [IO.File]::Move("$path.tmp", $path)
+        # Then one rename over the old file (MoveFileEx, replace existing): a hook reading meanwhile finds the old
+        # file or the new one, never none (it would get the defaults, Telegram off). Delete-then-move and
+        # [IO.File]::Replace both leave a moment without the name. A reader holding the file open blocks the
+        # rename for a moment: try again shortly.
+        Add-Type -AssemblyName Microsoft.VisualBasic
+        for ($try = 1; ; $try++) {
+            try { [Microsoft.VisualBasic.FileIO.FileSystem]::MoveFile("$path.tmp", $path, $true); break }
+            catch { if ($try -ge 5) { throw }; Start-Sleep -Milliseconds 20 }
+        }
         return $true
     } catch { return $false }
 }

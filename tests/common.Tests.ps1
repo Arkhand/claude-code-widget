@@ -654,6 +654,30 @@ Describe 'Read-Prefs / Save-Prefs' {
     It 'returns false instead of throwing when the folder does not exist' {
         Save-Prefs (Join-Path $TestDrive 'nope\nope') (Get-DefaultPrefs) | Should -BeFalse
     }
+    It 'a hook reading prefs.json while the widget replaces it never gets the defaults' {
+        $want = Get-DefaultPrefs
+        $want.telegram = $true
+        $want.notifyAfter = 1
+        Save-Prefs $dir $want | Should -BeTrue
+        # Another process (the hook) reads over and over while the widget saves the same prefs again and again
+        $ps = [powershell]::Create()
+        [void]$ps.AddScript({
+                param($Common, $Dir)
+                . $Common
+                $wrong = 0
+                $until = [DateTime]::UtcNow.AddSeconds(3)
+                while ([DateTime]::UtcNow -lt $until) { $p = Read-Prefs $Dir; if (-not $p.telegram -or $p.notifyAfter -ne 1) { $wrong++ } }
+                $wrong
+            }).AddArgument((Join-Path $PSScriptRoot '..\plugins\opaiva-code-widget\scripts\common.ps1')).AddArgument($dir)
+        $h = $ps.BeginInvoke()
+        try {
+            $until = (Get-Date).AddSeconds(2.5)
+            while ((Get-Date) -lt $until) { [void](Save-Prefs $dir $want); Start-Sleep -Milliseconds 5 }
+            $wrong = @($ps.EndInvoke($h))[-1]
+        } finally { $ps.Dispose() }
+        $wrong | Should -Be 0
+        Get-Content -LiteralPath $file -Raw | Should -BeExactly '{"theme":"dark","opacity":1,"volume":100,"scale":1,"minimal":false,"notifyAfter":1,"telegram":true,"closeAfter":5}'
+    }
 }
 
 Describe 'close and alert times' {
