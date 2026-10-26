@@ -872,11 +872,9 @@ try {
         $it.ui.DoneTitle.Text = $Sep + $(if ($d.question) { $S.doneQuestionTitle } else { $S.doneTitle })
         Set-ProjectChip $it.ui.DoneProjectChip $it.ui.DoneProject $d
         $it.ui.DoneMsg.Text = [string]$d.message
-        $it.ui.BtnGoVs.Content = switch ([string]$d.kind) {
-            'terminal' { $S.goToTerminal }
-            'other' { $S.goToWindow }
-            default { $S.goToVsCode }
-        }
+        $goTo = Get-GoToButton $d $S
+        $it.ui.BtnGoVs.Content = $goTo.Label
+        $it.ui.BtnGoVs.ToolTip = $goTo.Tip
         $it.ui.BtnDismiss.Content = $S.ok
         # Each button knows its notice by key
         foreach ($b in 'BtnGoVs', 'BtnDismiss', 'BtnDoneClose') { $it.ui[$b].Tag = [string]$d.key }
