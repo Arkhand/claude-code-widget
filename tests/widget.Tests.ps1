@@ -830,8 +830,7 @@ Describe 'widget.ps1 Telegram alerts' -Tag 'Desktop' {
         $proc = Start-TgWidget $data $fake.Url @('-TelegramCallMaxSecs', '3')
         $log = Join-Path $data 'widget.log'
         # Given up once, tried again (status 0 may pass), given up again: logged as a plain timeout
-        (Wait-Until { (Test-Path -LiteralPath $log) -and ([IO.File]::ReadAllText($log) -cmatch 'telegram: 0 timeout(?
-|$)') } 25) | Should -BeTrue
+        (Wait-Until { (Test-Path -LiteralPath $log) -and ([IO.File]::ReadAllText($log) -cmatch 'telegram: 0 timeout(\r?\n|$)') } 25) | Should -BeTrue
         [IO.File]::ReadAllText($log).Contains($script:Token) | Should -BeFalse
         $proc.HasExited | Should -BeFalse
     }
