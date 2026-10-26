@@ -1392,3 +1392,37 @@ Describe 'Telegram sender helpers' {
         }
     }
 }
+
+Describe 'Get-NoticesInFront' {
+    BeforeAll {
+        function New-Notice([string]$Key, $Hwnd, $Desktop) {
+            $n = [pscustomobject]@{ key = $Key; hwnd = $Hwnd }
+            if ($null -ne $Desktop) { $n | Add-Member -NotePropertyName desktopApp -NotePropertyValue $Desktop }
+            return $n
+        }
+    }
+    It 'returns the key of the notice whose window is in front' {
+        $n = @((New-Notice 'a' 100 $false), (New-Notice 'b' 200 $false))
+        @(Get-NoticesInFront $n 200) | Should -Be @('b')
+    }
+    It 'returns nothing when no notice has that window' {
+        @(Get-NoticesInFront @((New-Notice 'a' 100 $false)) 300).Count | Should -Be 0
+    }
+    It 'ignores a notice whose window is unknown (hwnd 0), even when nothing is in front' {
+        @(Get-NoticesInFront @((New-Notice 'a' 0 $false)) 0).Count | Should -Be 0
+    }
+    It 'ignores Claude desktop app notices: one window serves every session' {
+        @(Get-NoticesInFront @((New-Notice 'a' 100 $true)) 100).Count | Should -Be 0
+    }
+    It 'treats a notice without desktopApp (an old one) as not a desktop app' {
+        @(Get-NoticesInFront @((New-Notice 'a' 100 $null)) 100) | Should -Be @('a')
+    }
+    It 'returns both keys for two notices on the same window (two tabs of one terminal)' {
+        $n = @((New-Notice 'a' 100 $false), (New-Notice 'b' 100 $false), (New-Notice 'c' 200 $false))
+        @(Get-NoticesInFront $n 100) | Should -Be @('a', 'b')
+    }
+    It 'accepts no notices' {
+        @(Get-NoticesInFront @() 100).Count | Should -Be 0
+        @(Get-NoticesInFront $null 100).Count | Should -Be 0
+    }
+}

@@ -985,12 +985,14 @@ try {
         if ($h -ne [IntPtr]::Zero) { [void][ClaudeWidget.WinFocus]::FocusHandle($h.ToInt64()) }
     }
 
-    # Closes the notice with that key (its box's buttons), or the top one (double click)
-    function Close-DoneNotice([string]$Key = '', [switch]$GoToSession) {
+    # Closes the notice with that key (its box's buttons), or the top one (double click).
+    # -Seen: closed because you brought its session window to the front, not by a click: no click guard, and it
+    # also closes a notice with no box (past the shown stack, or while do not disturb hides the boxes)
+    function Close-DoneNotice([string]$Key = '', [switch]$GoToSession, [switch]$Seen) {
         # (a key no longer in the stack: a box that is already folding away)
-        if ($Key -and -not $script:doneItems.Contains($Key)) { return }
-        $d = if ($Key) { $script:doneItems[$Key].notice } else { $script:currentDone }
-        if (-not $d -or (Test-ClickTooSoon)) { return }
+        if ($Key -and -not $script:doneItems.Contains($Key) -and -not ($Seen -and $script:doneCache.ContainsKey($Key))) { return }
+        $d = if (-not $Key) { $script:currentDone } elseif ($script:doneItems.Contains($Key)) { $script:doneItems[$Key].notice } else { $script:doneCache[$Key] }
+        if (-not $d -or (-not $Seen -and (Test-ClickTooSoon))) { return }
         Remove-Item -LiteralPath $d.file -Force -ErrorAction SilentlyContinue
         # You saw it: a Telegram alert already sent for it gets edited to resolved
         $script:tgClosed[[string]$d.key] = $true
@@ -1006,6 +1008,16 @@ try {
             }
         }
         Update-View
+    }
+
+    # You looked at the session: its finished notice closes (with Telegram, it can no longer alert). Runs every tick,
+    # so it costs one GetForegroundWindow, and nothing at all while no notice has been read
+    function Close-SeenNotices {
+        if (-not $script:canFocus -or $script:doneCache.Count -eq 0) { return }
+        $fg = [ClaudeWidget.WinFocus]::Foreground().ToInt64()
+        # (the widget itself in front says nothing about a session)
+        if ($fg -eq 0 -or $fg -eq $script:hwnd.ToInt64()) { return }
+        foreach ($k in @(Get-NoticesInFront @($script:doneCache.Values) $fg)) { Close-DoneNotice $k -Seen }
     }
 
     $ui.BtnApprove.Add_Click({ Send-Response 'allow' })
@@ -1465,6 +1477,7 @@ try {
             return
         }
         try { Sync-Dnd } catch { Write-Log $_ }
+        try { Close-SeenNotices } catch { Write-Log $_ }
         if ($script:ticks % 5 -eq 0) { try { Update-Alerts } catch { Write-Log $_ } }
         try { Update-View } catch { Write-Log $_ }
         # Every ~2 s: a monitor unplugged or back, a resolution change, the taskbar moved

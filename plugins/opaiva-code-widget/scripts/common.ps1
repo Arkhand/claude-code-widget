@@ -104,6 +104,20 @@ function Get-DoneNotices([string]$Queue, [hashtable]$Cache, [int64]$MaxAgeMs) {
     return $list | Sort-Object -Property { [int64]$_.created } -Descending
 }
 
+# Keys of the finished notices whose session window is the one in front: you are looking at that reply, so it
+# should close. Pure (callers wrap the call in @()). A window unknown at the time (hwnd 0) never matches, and
+# neither does a Claude desktop app notice: one window serves every session, so being in front says nothing
+# about which session you are reading. Notices written before desktopApp existed have none: not a desktop app.
+function Get-NoticesInFront($Notices, [int64]$ForegroundHwnd) {
+    if ($ForegroundHwnd -eq 0) { return @() }
+    $keys = New-Object System.Collections.ArrayList
+    foreach ($n in @($Notices)) {
+        if (-not $n -or [bool]$n.desktopApp) { continue }
+        if ([int64]$n.hwnd -eq $ForegroundHwnd) { [void]$keys.Add([string]$n.key) }
+    }
+    return [string[]]$keys.ToArray()
+}
+
 # Appends "<date>T<time> <text>" to a log file (UTF-8). Past $MaxBytes the file first becomes
 # <file>.old (replacing the previous one), so a log never grows past about twice $MaxBytes.
 # Never throws: a log that cannot be written must not stop the hook or the widget.

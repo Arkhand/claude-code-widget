@@ -72,6 +72,50 @@ namespace CcwTest {
 }
 '@
     }
+    if (-not ('CcwTest.Front' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+namespace CcwTest {
+    public static class Front {
+        [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+        [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
+        [DllImport("user32.dll")] static extern bool BringWindowToTop(IntPtr h);
+        [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+        [DllImport("user32.dll")] static extern bool AttachThreadInput(uint a, uint b, bool attach);
+        [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+        public static IntPtr Current() { return GetForegroundWindow(); }
+        // Windows lets a process take the foreground only from the window that has it: join that window's input queue first
+        public static bool Take(IntPtr h) {
+            uint pid;
+            uint owner = GetWindowThreadProcessId(GetForegroundWindow(), out pid);
+            uint me = GetCurrentThreadId();
+            AttachThreadInput(me, owner, true);
+            BringWindowToTop(h);
+            SetForegroundWindow(h);
+            AttachThreadInput(me, owner, false);
+            return GetForegroundWindow() == h;
+        }
+    }
+}
+'@
+    }
+    Add-Type -AssemblyName System.Windows.Forms
+    # A real top-level window of this process, brought to the front (null when Windows does not allow it here).
+    # The caller closes it.
+    function New-FrontWindow {
+        $f = New-Object System.Windows.Forms.Form
+        $f.Text = 'ccw-test-session-window'
+        $f.StartPosition = 'Manual'
+        $f.Location = New-Object System.Drawing.Point 0, 400
+        $f.Size = New-Object System.Drawing.Size 200, 80
+        $f.TopMost = $true
+        $f.Show()
+        [System.Windows.Forms.Application]::DoEvents()
+        if ([CcwTest.Front]::Take($f.Handle)) { return $f }
+        $f.Close()
+        return $null
+    }
 }
 AfterAll { $env:CLAUDE_WIDGET_NO_TRAY = $savedNoTray }
 
@@ -650,6 +694,37 @@ Describe 'widget.ps1 Telegram alerts' -Tag 'Desktop' {
         ((Get-NowMs) - $created) | Should -BeLessThan 300000
     }
 
+    It 'closes a finished notice when its window comes to the front, and does not alert for it' {
+        $win = New-FrontWindow
+        if (-not $win) { Set-ItResult -Skipped -Because 'Windows did not let this process take the foreground'; return }
+        try {
+            $data = New-TgSandbox '0'
+            $queue = Join-Path $data 'queue'
+            $created = (Get-NowMs) - 2 * 60000
+            $seenFile = Join-Path $queue "done-s1-$created.json"
+            $otherFile = Join-Path $queue "done-s2-$created.json"
+            Write-JsonAtomic $seenFile ([ordered]@{ session = 's1'; created = $created; cwd = 'C:\dev\alpha'
+                    message = 'Alpha is done'; hwnd = $win.Handle.ToInt64(); kind = ''; title = ''; desktopApp = $false })
+            Write-JsonAtomic $otherFile ([ordered]@{ session = 's2'; created = $created; cwd = 'C:\dev\beta'
+                    message = 'Beta is done'; hwnd = 1; kind = ''; title = ''; desktopApp = $false })
+            $proc = Start-TgWidget $data $fake.Url
+            $deadline = (Get-Date).AddSeconds(30)
+            while ((Get-Date) -lt $deadline -and (Get-TgCalls $fake 'sendMessage').Count -lt 1) {
+                # (starting the widget process can pull the foreground away: bring the window back, as you would)
+                [void][CcwTest.Front]::Take($win.Handle)
+                [System.Windows.Forms.Application]::DoEvents()
+                Start-Sleep -Milliseconds 250
+            }
+            (Get-TgCalls $fake 'sendMessage').Count | Should -Be 1
+            $text = ((Get-TgCalls $fake 'sendMessage')[0].body | ConvertFrom-Json).text
+            $text | Should -BeLike '*Beta is done*'
+            $text | Should -Not -BeLike '*Alpha is done*'
+            $seenFile | Should -Not -Exist
+            $otherFile | Should -Exist
+        }
+        finally { $win.Close() }
+    }
+
     It 'sends while do not disturb hides the widget' {
         $data = New-TgSandbox '0'
         $queue = Join-Path $data 'queue'
@@ -662,5 +737,50 @@ Describe 'widget.ps1 Telegram alerts' -Tag 'Desktop' {
         (Wait-Until { (Get-TgCalls $fake 'sendMessage').Count -ge 1 }) | Should -BeTrue
         @([CcwTest.Windows]::Rects($proc.Id)).Count | Should -Be 0
         ((Get-TgCalls $fake 'sendMessage')[0].body | ConvertFrom-Json).text | Should -BeLike '*Done while hidden*'
+    }
+}
+
+
+Describe 'widget.ps1 finished notices' -Tag 'Desktop' {
+    It 'closes the notices of the window in front, not a desktop app one nor one of another window, with no Telegram' {
+        $win = New-FrontWindow
+        if (-not $win) { Set-ItResult -Skipped -Because 'Windows did not let this process take the foreground'; return }
+        $data = Join-Path ([IO.Path]::GetTempPath()) ('ccw-widget-' + [guid]::NewGuid().ToString('N'))
+        $queue = Join-Path $data 'queue'
+        New-Item -ItemType Directory -Path $queue | Out-Null
+        [IO.File]::WriteAllText((Join-Path $data 'state.json'), '{"right":520,"bottom":330}')
+        [IO.File]::WriteAllText((Join-Path $data 'prefs.json'), '{"volume":0}')
+        $proc = $null
+        try {
+            $created = (Get-NowMs) - 1000
+            $hwnd = $win.Handle.ToInt64()
+            # Two tabs of one window, a desktop app session on that window, and a session of another window
+            $files = @{}
+            foreach ($n in @(@('tab1', $hwnd, $false), @('tab2', $hwnd, $false), @('desktop', $hwnd, $true), @('other', 1, $false))) {
+                $files[$n[0]] = Join-Path $queue ('done-{0}-{1}.json' -f $n[0], $created)
+                Write-JsonAtomic $files[$n[0]] ([ordered]@{ session = $n[0]; created = $created; cwd = 'C:\dev\alpha'
+                        message = 'x'; hwnd = $n[1]; kind = ''; title = ''; desktopApp = $n[2] })
+            }
+            $proc = Start-Process powershell.exe -PassThru -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
+                '-File', ('"{0}"' -f $widget), '-DataDir', ('"{0}"' -f $data), '-Lang', 'en',
+                '-SettingsPath', ('"{0}"' -f (Join-Path $data 'settings.json'))
+            $deadline = (Get-Date).AddSeconds(30)
+            while ((Get-Date) -lt $deadline -and ((Test-Path $files.tab1) -or (Test-Path $files.tab2))) {
+                [void][CcwTest.Front]::Take($win.Handle)
+                [System.Windows.Forms.Application]::DoEvents()
+                Start-Sleep -Milliseconds 250
+            }
+            Start-Sleep -Seconds 2
+            $files.tab1 | Should -Not -Exist
+            $files.tab2 | Should -Not -Exist
+            $files.desktop | Should -Exist
+            $files.other | Should -Exist
+            Join-Path $data 'widget.log' | Should -Not -Exist
+        }
+        finally {
+            if ($proc) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue; [void]$proc.WaitForExit(5000) }
+            $win.Close()
+            Remove-Item -LiteralPath $data -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
 }
