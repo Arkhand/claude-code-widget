@@ -555,6 +555,29 @@ Describe 'Read-Prefs / Save-Prefs' {
         [IO.File]::WriteAllText($file, (@{ notifyAfter = $v } | ConvertTo-Json -Compress))
         (Read-Prefs $dir).notifyAfter | Should -Be 5
     }
+    It 'defaults closeAfter to 5' {
+        (Read-Prefs $dir).closeAfter | Should -Be 5
+    }
+    It 'keeps closeAfter <n>' -ForEach @(@{ n = 0 }, @{ n = 1 }, @{ n = 3 }, @{ n = 5 }, @{ n = 15 }, @{ n = 30 }) {
+        [IO.File]::WriteAllText($file, ('{"closeAfter":' + $n + '}'))
+        $p = Read-Prefs $dir
+        $p.closeAfter | Should -Be $n
+        $p.closeAfter | Should -BeOfType [int]
+    }
+    It 'falls back to 5 for closeAfter <v>' -ForEach @(@{ v = 2 }, @{ v = 60 }, @{ v = -1 }, @{ v = 0.5 }, @{ v = 'x' }, @{ v = $true }, @{ v = $null }) {
+        [IO.File]::WriteAllText($file, (@{ closeAfter = $v } | ConvertTo-Json -Compress))
+        (Read-Prefs $dir).closeAfter | Should -Be 5
+    }
+    It 'round-trips closeAfter <n>' -ForEach @(@{ n = 0 }, @{ n = 30 }) {
+        $want = Get-DefaultPrefs
+        $want.closeAfter = $n
+        Save-Prefs $dir $want | Should -BeTrue
+        (Read-Prefs $dir).closeAfter | Should -Be $n
+    }
+    It 'a prefs set without closeAfter is saved with the default, not as Never' {
+        Save-Prefs $dir @{ theme = 'dark'; opacity = 1.0; volume = 100; scale = 1.0; minimal = $false } | Should -BeTrue
+        (Read-Prefs $dir).closeAfter | Should -Be 5
+    }
     It 'reads telegram true' {
         [IO.File]::WriteAllText($file, '{"telegram":true}')
         (Read-Prefs $dir).telegram | Should -BeTrue
@@ -630,6 +653,46 @@ Describe 'Read-Prefs / Save-Prefs' {
     }
     It 'returns false instead of throwing when the folder does not exist' {
         Save-Prefs (Join-Path $TestDrive 'nope\nope') (Get-DefaultPrefs) | Should -BeFalse
+    }
+}
+
+Describe 'close and alert times' {
+    It 'Get-CloseAfterMs is closeAfter <m> min in ms (<ms>)' -ForEach @(
+        @{ m = 1; ms = 60000 }, @{ m = 5; ms = 300000 }, @{ m = 30; ms = 1800000 }, @{ m = 0; ms = 3600000 }) {
+        $got = Get-CloseAfterMs @{ closeAfter = $m }
+        $got | Should -Be $ms
+        $got | Should -BeOfType [int64]
+    }
+    It 'Get-CloseAfterMs gives -NeverMs for Never' {
+        Get-CloseAfterMs @{ closeAfter = 0 } 43200000 | Should -Be 43200000
+        Get-CloseAfterMs @{ closeAfter = 3 } 43200000 | Should -Be 180000
+    }
+    It 'a finished notice lasts closeAfter, 12 h with Never' {
+        Get-NoticeMaxAgeMs @{ closeAfter = 5 } | Should -Be 300000
+        Get-NoticeMaxAgeMs @{ closeAfter = 0 } | Should -Be (12 * 3600 * 1000)
+    }
+    It 'a notice alerts at min(notifyAfter, its max age - 15 s): close <close> / alert <alert> -> <ms>' -ForEach @(
+        @{ close = 5; alert = 5; ms = 285000 }
+        @{ close = 5; alert = 1; ms = 60000 }
+        @{ close = 1; alert = 3; ms = 45000 }
+        @{ close = 15; alert = 5; ms = 300000 }
+        @{ close = 0; alert = 5; ms = 300000 }) {
+        Get-NoticeAlertMs @{ closeAfter = $close; notifyAfter = $alert } | Should -Be $ms
+    }
+}
+
+Describe 'Format-Countdown' {
+    It 'is the time left as m:ss' {
+        $r = [pscustomobject]@{ created = 1000000; timeout = 300 }
+        Format-Countdown $r (1000000 + 61000) 'closes in {0}:{1:00}' | Should -BeExactly 'closes in 3:59'
+    }
+    It 'stops at 0:00' {
+        $r = [pscustomobject]@{ created = 1000000; timeout = 60 }
+        Format-Countdown $r (1000000 + 999000) '{0}:{1:00}' | Should -BeExactly '0:00'
+    }
+    It 'is empty for a request that never closes by itself' {
+        $r = [pscustomobject]@{ created = 1000000; timeout = 3600; noCountdown = $true }
+        Format-Countdown $r 1000000 '{0}:{1:00}' | Should -BeExactly ''
     }
 }
 

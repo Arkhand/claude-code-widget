@@ -51,6 +51,8 @@ $S = Get-Strings $Lang
 # One widget per data dir; the widget computes the same name
 $MutexName = Get-MutexName $Data
 $script:waitEnd = $null
+# Wait-Response queued the Telegram alert of the request while it was still on the card
+$script:alertQueued = $false
 
 function Write-HookLog([string]$msg) { Write-LogLine $LogPath $msg }
 
@@ -325,11 +327,18 @@ function Format-Snippet([string]$text) {
 }
 
 # Waits for the widget's queue\res-<id>.json. $null = gave up ($script:waitEnd says why).
-function Wait-Response([string]$id, [int]$TimeoutSecs) {
+# $Alert (Telegram ready and a session; see Send-RequestAlert): still unanswered after $AlertSecs, and before the
+# card closes, the alert goes out ($script:alertQueued) and the card stays while you are at the computer; if you
+# are away at that moment it is handed over, so the phone can answer it.
+function Wait-Response([string]$id, [int]$TimeoutSecs, [int]$AlertSecs = 0, [hashtable]$Alert = $null, [string]$LogTag = '') {
+    $script:alertQueued = $false
     $resPath = Join-Path $Queue "res-$id.json"
     $parentPid = $null
     try { $parentPid = (Get-CimInstance Win32_Process -Filter "ProcessId=$PID").ParentProcessId } catch {}
-    $deadline = (Get-Date).AddSeconds($TimeoutSecs)
+    $start = Get-Date
+    $deadline = $start.AddSeconds($TimeoutSecs)
+    # Closing first (or at the same time) alerts as before, through the caller ('timeout')
+    $alertAt = if ($Alert -and $AlertSecs -gt 0 -and $AlertSecs -lt $TimeoutSecs) { $start.AddSeconds($AlertSecs) } else { $null }
     $tick = 0
     while ((Get-Date) -lt $deadline) {
         if (Test-Path -LiteralPath $resPath) {
@@ -339,6 +348,12 @@ function Wait-Response([string]$id, [int]$TimeoutSecs) {
         if ($tick % 5 -eq 0) {
             if (-not (Test-Widget)) { $script:waitEnd = 'widget closed'; return $null }
             if ($parentPid -and -not (Get-Process -Id $parentPid -ErrorAction SilentlyContinue)) { $script:waitEnd = 'session ended'; return $null }
+            if ($alertAt -and -not $script:alertQueued -and (Get-Date) -ge $alertAt) {
+                Send-RequestAlert $Alert 'unanswered' $LogTag ''
+                $script:alertQueued = $true
+                if (Test-Away) { $script:waitEnd = 'idle'; return $null }
+                Write-HookLog "$LogTag alerted at $AlertSecs s, the card stays"
+            }
             # You walked away with the card on screen: hand it to VS Code / your phone
             if (Test-Away) { $script:waitEnd = 'idle'; return $null }
             # "Do not disturb" was turned on after this request was written: the widget is hidden
@@ -372,12 +387,20 @@ function Remove-Request([string]$id) {
     Remove-Item -LiteralPath (Join-Path $Queue "req-$id.json"), (Join-Path $Queue "res-$id.json") -Force -ErrorAction SilentlyContinue
 }
 
-# How long a request waits for the widget: the "Wait for answer" preference (1, 3 or 5 minutes), read
-# when the request is created. The request file carries it to the widget's countdown.
+# How long a request waits for the widget: the "Close automatically" preference (closeAfter; Never = the
+# 60-minute limit hooks.json gives the hook), read when the request is created. The request file carries it
+# to the widget's countdown.
 function Get-RequestTimeout($Prefs) {
     # TESTS ONLY: a few seconds instead of minutes, so the e2e tests can reach a timeout quickly. Not a
     # user setting: it is not documented and the widget never reads it.
     if ($env:CLAUDE_WIDGET_WAIT_SECS) { return [int]$env:CLAUDE_WIDGET_WAIT_SECS }
+    return [int]((Get-CloseAfterMs $Prefs) / 1000)
+}
+
+# When a request still on the card alerts on Telegram: the "Alert after" preference (notifyAfter)
+function Get-AlertSecs($Prefs) {
+    # TESTS ONLY, like CLAUDE_WIDGET_WAIT_SECS: not a user setting, not documented
+    if ($env:CLAUDE_WIDGET_ALERT_SECS) { return [int]$env:CLAUDE_WIDGET_ALERT_SECS }
     return [int]$Prefs.notifyAfter * 60
 }
 
@@ -427,9 +450,10 @@ function Get-AlertAction($Res, [string]$WaitEnd) {
 }
 
 # Queues the Telegram side of a request that goes to VS Code. Callers build $Alert only when Telegram is
-# ready and the event has a session. $Why: 'wait' -> "waiting in VS Code" marker; 'away', 'timeout', 'idle'
-# -> outbox entry to send now, with that reason, plus the session's alerted- stamp (the Notification that
-# Claude Code sends a few seconds later for the same prompt must not queue a second alert). The title is
+# ready and the event has a session. $Why: 'wait' -> "waiting in VS Code" marker; 'away', 'timeout', 'idle',
+# 'unanswered' (still on the card at notifyAfter, see Wait-Response) -> outbox entry to send now, with that
+# reason, plus the session's alerted- stamp (the Notification that Claude Code sends a few seconds later for
+# the same prompt must not queue a second alert). The title is
 # read only here, unless the caller already has it. For 'away' the widget (the sender) is launched after
 # the entry is on disk, without waiting for it: the request goes to VS Code / your phone at once.
 function Send-RequestAlert([hashtable]$Alert, [string]$Why, [string]$LogTag, [string]$Transcript) {
@@ -645,8 +669,9 @@ function Invoke-Hook($evt) {
             description = [string]$questions[0].question
             questions   = $questions
             title       = $title
+            noCountdown = ([int]$prefs.closeAfter -eq 0)
         }
-        try { $res = Wait-Response $id $timeout } finally { Remove-Request $id }
+        try { $res = Wait-Response $id $timeout (Get-AlertSecs $prefs) $alert $logTag } finally { Remove-Request $id }
 
         if ($res -and $res.decision -eq 'answer' -and $res.answers) {
             Write-HookLog "$logTag answered in the widget"
@@ -655,7 +680,8 @@ function Invoke-Hook($evt) {
         $why = if ($res) { [string]$res.decision } else { $script:waitEnd }
         Write-HookLog "$logTag goes to VS Code ($why)"
         $action = Get-AlertAction $res $script:waitEnd
-        if ($alert -and $action) { Send-RequestAlert $alert $action $logTag $transcript }
+        # Already alerted while on the card: no second alert nor a wait marker for the same request
+        if ($alert -and $action -and -not $script:alertQueued) { Send-RequestAlert $alert $action $logTag $transcript }
         return $null
     }
 
@@ -698,13 +724,15 @@ function Invoke-Hook($evt) {
             title       = $title
             change      = New-ChangeInfo $tool $in
             suggestions = $offered
+            noCountdown = ([int]$prefs.closeAfter -eq 0)
         }
-        try { $res = Wait-Response $id $timeout } finally { Remove-Request $id }
+        try { $res = Wait-Response $id $timeout (Get-AlertSecs $prefs) $alert $logTag } finally { Remove-Request $id }
 
         $decision = if ($res) { [string]$res.decision } else { $null }
         Write-HookLog ("$logTag $tool -> " + $(if ($decision) { $decision } else { $script:waitEnd }))
         $action = Get-AlertAction $res $script:waitEnd
-        if ($alert -and $action) { Send-RequestAlert $alert $action $logTag $transcript }
+        # Already alerted while on the card: no second alert nor a wait marker for the same request
+        if ($alert -and $action -and -not $script:alertQueued) { Send-RequestAlert $alert $action $logTag $transcript }
         if ($decision -eq 'allowAlways') {
             # Only the index counts: the content comes from Claude Code's own suggestions of this request
             $index = -1

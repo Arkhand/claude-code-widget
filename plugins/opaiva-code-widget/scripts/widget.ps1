@@ -35,7 +35,6 @@ $StatePath = Join-Path $Data 'state.json'
 # hook.ps1 creates this file to ask a widget from an older version to close itself (so its tray icon is removed)
 $QuitPath = Join-Path $Data 'quit.flag'
 $LogPath = Join-Path $Data 'widget.log'
-$DoneMaxAgeMs = 5 * 60 * 1000
 
 $Lang = Resolve-Lang $Lang
 $S = Get-Strings $Lang
@@ -392,10 +391,11 @@ try {
         $win.Topmost = $true
     }
 
+    # Hidden for a request that never closes by itself (closeAfter Never)
     function Set-Countdown($textBlock, $r) {
-        $left = [int]$r.timeout - [int](((Get-NowMs) - [int64]$r.created) / 1000)
-        if ($left -lt 0) { $left = 0 }
-        $textBlock.Text = $S.closesIn -f [math]::Floor($left / 60), ($left % 60)
+        $text = Format-Countdown $r (Get-NowMs) $S.closesIn
+        $textBlock.Text = $text
+        $textBlock.Visibility = if ($text) { 'Visible' } else { 'Collapsed' }
     }
 
     function Set-QueueChip($chip, $textBlock, [int]$total) {
@@ -414,7 +414,8 @@ try {
 
     # Queue readers live in common.ps1; the caches keep each file from being re-read every tick
     function Get-Pending { Get-PendingRequests $Queue $script:cache }
-    function Get-Done { Get-DoneNotices $Queue $script:doneCache $DoneMaxAgeMs }
+    # Notices live closeAfter (read each time: the menu can change it while the widget runs)
+    function Get-Done { Get-DoneNotices $Queue $script:doneCache (Get-NoticeMaxAgeMs $script:prefs) }
 
     # ---------------- Permission request ----------------
     # The diff of an Edit/Write under the detail box: red removed lines, green added lines
@@ -855,8 +856,10 @@ try {
         else { $it.ui.DoneAgo.Text = $S.hoursAgo -f [math]::Floor($mins / 60) }
         # Countdown ring: one dash as long as the time left, in units of the stroke thickness
         # (0.0, not 0: with an int first argument PowerShell picks Max(int, int) and rounds the fraction)
-        $left = [math]::Max(0.0, 1 - ((Get-NowMs) - [int64]$d.created) / $DoneMaxAgeMs)
+        $left = [math]::Max(0.0, 1 - ((Get-NowMs) - [int64]$d.created) / (Get-NoticeMaxAgeMs $script:prefs))
         $ring = $it.ui.DoneTimer
+        # Never closes by itself: no countdown (Hidden keeps the header layout)
+        $ring.Visibility = if ([int]$script:prefs.closeAfter -eq 0) { 'Hidden' } else { 'Visible' }
         $len = [math]::PI * ($ring.Width - $ring.StrokeThickness) / $ring.StrokeThickness
         $ring.StrokeDashArray = [System.Windows.Media.DoubleCollection]::new([double[]]@(($left * $len), $len))
         if ($hidden -gt 0) {
@@ -1427,10 +1430,8 @@ try {
         $notices = @(Select-UnseenAlerts @(Get-Done) $seen)
         $away = (Get-IdleSeconds) -ge $AwaySecs
         $afterMs = [int64]$script:prefs.notifyAfter * 60000
-        # Notices are deleted at $DoneMaxAgeMs: with X = 5 min one would be gone before it alerts, so it is due 15 s
-        # earlier (room for the batch window and the 2 s rounds)
-        $noticeAfterMs = [math]::Min($afterMs, [int64]$DoneMaxAgeMs - 15000)
-        $due = @(Get-DueAlerts $outbox $notices $waits $sent $now $afterMs $away (Test-Dnd $Data) -NoticeAfterMs $noticeAfterMs)
+        # Notices are deleted at closeAfter: due 15 s before that when it comes first, or one would be gone before it alerts
+        $due = @(Get-DueAlerts $outbox $notices $waits $sent $now $afterMs $away (Test-Dnd $Data) -NoticeAfterMs (Get-NoticeAlertMs $script:prefs))
 
         if ($due.Count -eq 0) { $script:tgBatchSince = 0 }
         elseif ($script:tgBatchSince -eq 0) { $script:tgBatchSince = $now }

@@ -178,6 +178,41 @@ Describe 'widget.ps1 queue loop' -Tag 'Desktop' {
     }
 }
 
+Describe 'widget.ps1 finished notice lifetime' -Tag 'Desktop' {
+    It 'keeps finished notices <keep> min old and removes them <drop> min old with closeAfter <close>' -ForEach @(
+        @{ close = 0; keep = 6; drop = 13 * 60 }, @{ close = 1; keep = 0.5; drop = 2 }) {
+        $data = Join-Path ([IO.Path]::GetTempPath()) ('ccw-widget-' + [guid]::NewGuid().ToString('N'))
+        $queue = Join-Path $data 'queue'
+        New-Item -ItemType Directory -Path $queue | Out-Null
+        [IO.File]::WriteAllText((Join-Path $data 'state.json'), '{"right":520,"bottom":330}')
+        [IO.File]::WriteAllText((Join-Path $data 'prefs.json'), ('{"closeAfter":' + $close + ',"volume":0}'))
+        $now = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+        $kept = $now - [int64]($keep * 60000)
+        $dropped = $now - [int64]($drop * 60000)
+        foreach ($created in $kept, $dropped) {
+            $notice = [ordered]@{ session = "s$created"; created = $created; cwd = ''; message = 'x'; hwnd = 0; kind = '' }
+            [IO.File]::WriteAllText((Join-Path $queue "done-s$created-$created.json"), ($notice | ConvertTo-Json -Compress))
+        }
+        $proc = Start-Process powershell.exe -PassThru -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
+            '-File', ('"{0}"' -f $widget), '-DataDir', ('"{0}"' -f $data), '-Lang', 'en', '-SettingsPath', ('"{0}"' -f (Join-Path $data 'settings.json'))
+        try {
+            $old = Join-Path $queue "done-s$dropped-$dropped.json"
+            $deadline = (Get-Date).AddSeconds(30)
+            while ((Get-Date) -lt $deadline -and (Test-Path -LiteralPath $old)) { Start-Sleep -Milliseconds 250 }
+            $old | Should -Not -Exist
+            # A few more rounds: the younger notice is still there
+            Start-Sleep -Seconds 3
+            Join-Path $queue "done-s$kept-$kept.json" | Should -Exist
+            Join-Path $data 'widget.log' | Should -Not -Exist
+        }
+        finally {
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            [void]$proc.WaitForExit(5000)
+            Remove-Item -LiteralPath $data -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 Describe 'widget.ps1 position' -Tag 'Desktop' {
     # With one monitor the old check already sent such a spot to the corner: this guards the wiring
     # of the new per-monitor check (the gap between monitors is covered by Resolve-Anchor's tests)
@@ -692,6 +727,21 @@ Describe 'widget.ps1 Telegram alerts' -Tag 'Desktop' {
         (Wait-Until { (Get-TgCalls $fake 'sendMessage').Count -ge 1 } 25) | Should -BeTrue
         ((Get-TgCalls $fake 'sendMessage')[0].body | ConvertFrom-Json).text | Should -BeLike '*All tests pass*'
         ((Get-NowMs) - $created) | Should -BeLessThan 300000
+    }
+
+    It 'sends a finished alert before the notice closes at closeAfter, when that comes before notifyAfter' {
+        $data = New-TgSandbox -NotifyAfter 3
+        [IO.File]::WriteAllText((Join-Path $data 'prefs.json'), '{"telegram":true,"notifyAfter":3,"closeAfter":1,"volume":0}')
+        $queue = Join-Path $data 'queue'
+        $proc = Start-TgWidget $data $fake.Url
+        (Wait-Until { Test-Path -LiteralPath (Join-Path $data 'widget.json') }) | Should -BeTrue
+        # 48 s old: it closes at 1 min, so the alert is due at 45 s, not at 3 min
+        $created = (Get-NowMs) - 48000
+        Write-JsonAtomic (Join-Path $queue "done-s1-$created.json") ([ordered]@{ session = 's1'; created = $created; cwd = 'C:\dev\alpha'
+                message = 'Build is green'; hwnd = 0; kind = 'vscode'; title = ''; desktopApp = $false })
+        (Wait-Until { (Get-TgCalls $fake 'sendMessage').Count -ge 1 } 12) | Should -BeTrue
+        ((Get-TgCalls $fake 'sendMessage')[0].body | ConvertFrom-Json).text | Should -BeLike '*Build is green*'
+        ((Get-NowMs) - $created) | Should -BeLessThan 60000
     }
 
     It 'closes a finished notice when its window comes to the front, and does not alert for it' {

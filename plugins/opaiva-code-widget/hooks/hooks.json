@@ -7,7 +7,7 @@
             "type": "command",
             "command": "powershell.exe",
             "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${CLAUDE_PLUGIN_ROOT}/scripts/hook.ps1"],
-            "timeout": 330
+            "timeout": 3630
           }
         ]
       }
@@ -20,7 +20,7 @@
             "type": "command",
             "command": "powershell.exe",
             "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${CLAUDE_PLUGIN_ROOT}/scripts/hook.ps1"],
-            "timeout": 330
+            "timeout": 3630
           }
         ]
       }

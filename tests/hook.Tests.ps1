@@ -363,13 +363,75 @@ Describe 'ConvertTo-UpdatedPermission and New-PermissionOutput' {
 
 Describe 'Get-RequestTimeout' {
     AfterEach { Remove-Item Env:\CLAUDE_WIDGET_WAIT_SECS -ErrorAction SilentlyContinue }
-    It 'is notifyAfter minutes in seconds (<minutes> -> <seconds>)' -ForEach @(
-        @{ minutes = 1; seconds = 60 }, @{ minutes = 3; seconds = 180 }, @{ minutes = 5; seconds = 300 }) {
-        Get-RequestTimeout @{ notifyAfter = $minutes } | Should -Be $seconds
+    It 'is closeAfter minutes in seconds, whatever notifyAfter is (<minutes> -> <seconds>)' -ForEach @(
+        @{ minutes = 1; seconds = 60 }, @{ minutes = 3; seconds = 180 }, @{ minutes = 5; seconds = 300 }, @{ minutes = 30; seconds = 1800 }) {
+        Get-RequestTimeout @{ closeAfter = $minutes; notifyAfter = 1 } | Should -Be $seconds
+    }
+    It 'is the hook limit of 3600 s for Never' {
+        Get-RequestTimeout @{ closeAfter = 0; notifyAfter = 5 } | Should -Be 3600
     }
     It 'takes the tests-only CLAUDE_WIDGET_WAIT_SECS override' {
         $env:CLAUDE_WIDGET_WAIT_SECS = '2'
-        Get-RequestTimeout @{ notifyAfter = 5 } | Should -Be 2
+        Get-RequestTimeout @{ closeAfter = 5; notifyAfter = 5 } | Should -Be 2
+    }
+}
+
+Describe 'Get-AlertSecs' {
+    AfterEach { Remove-Item Env:\CLAUDE_WIDGET_ALERT_SECS -ErrorAction SilentlyContinue }
+    It 'is notifyAfter minutes in seconds (<minutes> -> <seconds>)' -ForEach @(
+        @{ minutes = 1; seconds = 60 }, @{ minutes = 3; seconds = 180 }, @{ minutes = 5; seconds = 300 }) {
+        Get-AlertSecs @{ closeAfter = 0; notifyAfter = $minutes } | Should -Be $seconds
+    }
+    It 'takes the tests-only CLAUDE_WIDGET_ALERT_SECS override' {
+        $env:CLAUDE_WIDGET_ALERT_SECS = '1'
+        Get-AlertSecs @{ notifyAfter = 5 } | Should -Be 1
+    }
+}
+
+Describe 'hooks.json' {
+    It 'gives <name> more time than the longest wait for an answer (3600 s)' -ForEach @(@{ name = 'PermissionRequest' }, @{ name = 'PreToolUse' }) {
+        $json = [IO.File]::ReadAllText((Join-Path (Split-Path -Parent $PSScriptRoot) 'plugins\opaiva-code-widget\hooks\hooks.json')) | ConvertFrom-Json
+        $json.hooks.$name[0].hooks[0].timeout | Should -Be 3630
+    }
+}
+
+Describe 'Wait-Response alert at notifyAfter' {
+    BeforeAll { $alertItem = @{ kind = 'permission'; session = 'unit-w1'; cwd = 'C:/p'; title = 'T'; detail = 'Bash: ls' } }
+    BeforeEach {
+        Mock Test-Widget { $true }
+        Mock Test-Dnd { $false }
+        Mock Send-RequestAlert {}
+    }
+    It 'queues one alert while you are present and keeps waiting until the close time' {
+        Mock Test-Away { $false }
+        $clock = [Diagnostics.Stopwatch]::StartNew()
+        Wait-Response 'unit-none' 4 1 $alertItem 'tag' | Should -BeNullOrEmpty
+        $clock.Elapsed.TotalSeconds | Should -BeGreaterThan 3.5
+        $script:waitEnd | Should -BeExactly 'timeout'
+        $script:alertQueued | Should -BeTrue
+        Should -Invoke Send-RequestAlert -Times 1 -Exactly -ParameterFilter { $Why -eq 'unanswered' -and $Alert.session -eq 'unit-w1' }
+    }
+    It 'hands the card over when you are away at that moment' {
+        Mock Test-Away { $true }
+        $clock = [Diagnostics.Stopwatch]::StartNew()
+        Wait-Response 'unit-none' 30 1 $alertItem 'tag' | Should -BeNullOrEmpty
+        $clock.Elapsed.TotalSeconds | Should -BeLessThan 10
+        $script:waitEnd | Should -BeExactly 'idle'
+        $script:alertQueued | Should -BeTrue
+        Should -Invoke Send-RequestAlert -Times 1 -Exactly -ParameterFilter { $Why -eq 'unanswered' }
+    }
+    It 'does not alert by itself when the close time comes first or at the same time' {
+        Mock Test-Away { $false }
+        Wait-Response 'unit-none' 2 2 $alertItem 'tag' | Should -BeNullOrEmpty
+        $script:waitEnd | Should -BeExactly 'timeout'
+        $script:alertQueued | Should -BeFalse
+        Should -Invoke Send-RequestAlert -Times 0 -Exactly
+    }
+    It 'does not alert without Telegram (no alert item)' {
+        Mock Test-Away { $false }
+        Wait-Response 'unit-none' 3 1 $null 'tag' | Should -BeNullOrEmpty
+        $script:alertQueued | Should -BeFalse
+        Should -Invoke Send-RequestAlert -Times 0 -Exactly
     }
 }
 

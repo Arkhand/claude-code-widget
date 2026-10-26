@@ -337,14 +337,73 @@ Describe 'hook.ps1 end to end' {
             [IO.File]::WriteAllText((Join-Path $box.Data 'prefs.json'), '{"telegram":true,"notifyAfter":1}')
         }
 
-        It 'the request timeout follows notifyAfter' {
+        It 'the request timeout follows closeAfter, not notifyAfter (<close> -> <secs>, no countdown <never>)' -ForEach @(
+            @{ close = 3; secs = 180; never = $false }, @{ close = 0; secs = 3600; never = $true }) {
+            [IO.File]::WriteAllText((Join-Path $box.Data 'prefs.json'), ('{"telegram":true,"notifyAfter":1,"closeAfter":' + $close + '}'))
             $evt = New-BashEvent $box 'npm test'
             $run = Start-Hook $box $evt
             $req = Wait-HookRequest $box
-            $req.timeout | Should -Be 60
+            $req.timeout | Should -Be $secs
+            $req.noCountdown | Should -BeOfType [bool]
+            $req.noCountdown | Should -Be $never
             $req.session | Should -BeExactly $evt.session_id
             Send-WidgetResponse $box $req.id @{ decision = 'allow' }
             [void](Complete-Hook $run)
+        }
+        It 'the request timeout is the default 5 minutes with a countdown, also without Telegram' {
+            Remove-TelegramConfig $box.Data
+            [IO.File]::WriteAllText((Join-Path $box.Data 'prefs.json'), '{}')
+            $run = Start-Hook $box (New-QuestionEvent $box)
+            $req = Wait-HookRequest $box
+            $req.timeout | Should -Be 300
+            $req.PSObject.Properties.Name | Should -Contain 'noCountdown'
+            $req.noCountdown | Should -BeFalse
+            Send-WidgetResponse $box $req.id @{ decision = 'vscode' }
+            [void](Complete-Hook $run)
+        }
+        It 'alerts at notifyAfter while you are present and keeps the card until you answer' {
+            $evt = New-BashEvent $box 'npm test'
+            $run = Start-Hook $box $evt -Env @{ CLAUDE_WIDGET_WAIT_SECS = '30'; CLAUDE_WIDGET_ALERT_SECS = '1' }
+            $req = Wait-HookRequest $box
+            $deadline = (Get-Date).AddSeconds(15)
+            while ((Get-Date) -lt $deadline -and (Get-QueueFiles $box 'tg-*.json').Count -eq 0) { Start-Sleep -Milliseconds 100 }
+            $tg = Read-QueueJson $box 'tg-*.json'
+            $tg.Count | Should -Be 1
+            $tg[0].reason | Should -BeExactly 'unanswered'
+            $tg[0].session | Should -BeExactly $evt.session_id
+            $tg[0].detail | Should -BeExactly 'Bash: npm test'
+            (Read-QueueJson $box "alerted-$($evt.session_id).json").Count | Should -Be 1
+            # The card is still there and can still be answered
+            Start-Sleep -Seconds 2
+            $run.Process.HasExited | Should -BeFalse
+            Join-Path $box.Queue "req-$($req.id).json" | Should -Exist
+            Send-WidgetResponse $box $req.id @{ decision = 'allow' }
+            $r = Complete-Hook $run
+            ($r.Stdout | ConvertFrom-Json).hookSpecificOutput.decision.behavior | Should -BeExactly 'allow'
+            (Get-QueueFiles $box 'tg-*.json').Count | Should -Be 1
+        }
+        It 'a request alerted at notifyAfter is not alerted again when it closes' {
+            $evt = New-QuestionEvent $box
+            $r = Complete-Hook (Start-Hook $box $evt -Env @{ CLAUDE_WIDGET_WAIT_SECS = '4'; CLAUDE_WIDGET_ALERT_SECS = '1' })
+            $r.Stdout | Should -BeNullOrEmpty
+            $r.Seconds | Should -BeGreaterThan 3.5
+            $tg = Read-QueueJson $box 'tg-*.json'
+            $tg.Count | Should -Be 1
+            $tg[0].reason | Should -BeExactly 'unanswered'
+            $tg[0].kind | Should -BeExactly 'question'
+            (Get-QueueFiles $box 'wait-*.json').Count | Should -Be 0
+        }
+        It 'a request handed to VS Code after its alert gets no wait marker' {
+            $evt = New-BashEvent $box 'npm test'
+            $run = Start-Hook $box $evt -Env @{ CLAUDE_WIDGET_WAIT_SECS = '30'; CLAUDE_WIDGET_ALERT_SECS = '1' }
+            $req = Wait-HookRequest $box
+            $deadline = (Get-Date).AddSeconds(15)
+            while ((Get-Date) -lt $deadline -and (Get-QueueFiles $box 'tg-*.json').Count -eq 0) { Start-Sleep -Milliseconds 100 }
+            (Get-QueueFiles $box 'tg-*.json').Count | Should -Be 1
+            Send-WidgetResponse $box $req.id @{ decision = 'vscode' }
+            [void](Complete-Hook $run)
+            (Get-QueueFiles $box 'wait-*.json').Count | Should -Be 0
+            (Get-QueueFiles $box 'tg-*.json').Count | Should -Be 1
         }
         It 'writes an outbox entry when a request times out' {
             $evt = New-BashEvent $box 'npm test'

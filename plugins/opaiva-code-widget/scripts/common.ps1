@@ -414,7 +414,7 @@ function Format-RuleText($Rule) {
 
 # ---------------- Preferences (prefs.json) and theme ----------------
 
-function Get-DefaultPrefs { @{ theme = 'dark'; opacity = 1.0; volume = 100; scale = 1.0; minimal = $false; notifyAfter = 5; telegram = $false } }
+function Get-DefaultPrefs { @{ theme = 'dark'; opacity = 1.0; volume = 100; scale = 1.0; minimal = $false; notifyAfter = 5; telegram = $false; closeAfter = 5 } }
 
 # prefs.json in the data dir. Always returns a complete, valid set: a missing file gives the defaults,
 # and each bad field falls back to its default on its own.
@@ -449,13 +449,18 @@ function Read-Prefs([string]$Dir) {
     $n = & $num $j.notifyAfter
     if ($null -ne $n -and @(1, 3, 5) -contains $n) { $p.notifyAfter = [int]$n }
     if ($j.telegram -is [bool]) { $p.telegram = $j.telegram }
+    # Minutes before a card or a finished notice closes by itself; 0 = never
+    $n = & $num $j.closeAfter
+    if ($null -ne $n -and @(0, 1, 3, 5, 15, 30) -contains $n) { $p.closeAfter = [int]$n }
     return $p
 }
 
 # Overwrites prefs.json. Returns $false (never throws) when it cannot write.
 function Save-Prefs([string]$Dir, $Prefs) {
     try {
-        $o = [ordered]@{ theme = [string]$Prefs.theme; opacity = [double]$Prefs.opacity; volume = [int]$Prefs.volume; scale = [double]$Prefs.scale; minimal = [bool]$Prefs.minimal; notifyAfter = [int]$Prefs.notifyAfter; telegram = [bool]$Prefs.telegram }
+        $o = [ordered]@{ theme = [string]$Prefs.theme; opacity = [double]$Prefs.opacity; volume = [int]$Prefs.volume; scale = [double]$Prefs.scale; minimal = [bool]$Prefs.minimal; notifyAfter = [int]$Prefs.notifyAfter; telegram = [bool]$Prefs.telegram
+            # A missing value is the default, not 0 (= never)
+            closeAfter = $(if ($null -ne $Prefs.closeAfter) { [int]$Prefs.closeAfter } else { 5 }) }
         $path = Join-Path $Dir 'prefs.json'
         # Whole file at once: a crash in the middle never leaves half a prefs.json
         [IO.File]::WriteAllText("$path.tmp", ($o | ConvertTo-Json -Compress), (Get-Utf8NoBom))
@@ -463,6 +468,31 @@ function Save-Prefs([string]$Dir, $Prefs) {
         [IO.File]::Move("$path.tmp", $path)
         return $true
     } catch { return $false }
+}
+
+# How long a card or a finished notice stays before it closes by itself (closeAfter), in ms. Never (0) gives
+# $NeverMs: by default the hook's own limit for a card (60 minutes; hooks.json allows 3630 s).
+function Get-CloseAfterMs($Prefs, [int64]$NeverMs = 3600000) {
+    $m = [int64]$Prefs.closeAfter
+    if ($m -le 0) { return $NeverMs }
+    return $m * 60000
+}
+
+# A finished notice closes by itself at closeAfter; with Never it stays up to 12 h (as before 2.6.0)
+function Get-NoticeMaxAgeMs($Prefs) { return Get-CloseAfterMs $Prefs (12 * 3600 * 1000) }
+
+# The age at which a finished notice still open alerts: notifyAfter, or 15 s before it closes by itself when that
+# comes first (room for the batch window and the 2 s rounds), or it would be gone before it could ever alert
+function Get-NoticeAlertMs($Prefs) {
+    return [int64][math]::Min([int64]$Prefs.notifyAfter * 60000, (Get-NoticeMaxAgeMs $Prefs) - 15000)
+}
+
+# The card's "closes in m:ss" ($Format takes minutes and seconds), or '' for a request that never closes by itself
+function Format-Countdown($Request, [int64]$NowMs, [string]$Format) {
+    if ($Request.noCountdown) { return '' }
+    $left = [int]$Request.timeout - [int](($NowMs - [int64]$Request.created) / 1000)
+    if ($left -lt 0) { $left = 0 }
+    return $Format -f [math]::Floor($left / 60), ($left % 60)
 }
 
 # True when Windows apps use the light theme (HKCU ...\Themes\Personalize\AppsUseLightTheme = 1)
@@ -585,7 +615,8 @@ function Test-TelegramReady([string]$Dir, $Prefs) {
 # ---------------- Telegram alerts (queue files and the decision) ----------------
 
 # The hook writes four kinds of small files in the queue folder and never touches the network:
-#   tg-<id>.json        send this now (the hook already decided: request timed out, went idle, or you are away)
+#   tg-<id>.json        send this now (the hook already decided: request still unanswered at X, timed out, went
+#                       idle, or you are away)
 #   wait-<session>.json the session waits in VS Code: send only if it is still waiting at X and you are away
 #   seen-<session>.json the session moved on (any later hook event)
 #   alerted-<session>.json { session; at }: the hook queued a tg- entry for this session at that time (Unix
@@ -642,8 +673,8 @@ function Set-SessionSeen([string]$Queue, [string]$Session) {
 # results, $Waits are wait-*.json markers, $Sent is the table of Read-SentAlerts. Each result is a hashtable:
 # key (what goes into $Sent), source (req|done|wait), kind (permission|question|plan|done), session, cwd,
 # title, detail, created, reason.
-# $NoticeAfterMs (default $AfterMs) is the age at which a notice is due: the widget deletes notices after 5 minutes,
-# so with X = 5 it passes a little less, or a notice would be gone before it could ever alert.
+# $NoticeAfterMs (default $AfterMs) is the age at which a notice is due: the widget deletes notices at closeAfter,
+# so it passes Get-NoticeAlertMs, or a notice would be gone before it could ever alert.
 # This does not check that Telegram is connected: the caller only asks when it is.
 function Get-DueAlerts($Outbox, $Notices, $Waits, $Sent, [int64]$NowMs, [int64]$AfterMs, [bool]$Away, [bool]$Dnd, [int64]$NoticeAfterMs = -1) {
     if (-not $PSBoundParameters.ContainsKey('NoticeAfterMs')) { $NoticeAfterMs = $AfterMs }
