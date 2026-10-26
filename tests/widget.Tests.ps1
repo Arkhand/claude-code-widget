@@ -826,7 +826,7 @@ Describe 'widget.ps1 Telegram alerts' -Tag 'Desktop' {
         $fake.Replies['sendMessage'] = @{ status = 200; body = $script:SendOk; delayMs = 15000 }
         $data = New-TgSandbox
         $queue = Join-Path $data 'queue'
-        [void](Add-AlertOutbox $queue @{ kind = 'permission'; session = 's1'; cwd = 'C:\devlpha'; detail = 'Bash: npm test'; reason = 'timeout' })
+        [void](Add-AlertOutbox $queue @{ kind = 'permission'; session = 's1'; cwd = 'C:\dev\alpha'; detail = 'Bash: npm test'; reason = 'timeout' })
         $proc = Start-TgWidget $data $fake.Url @('-TelegramCallMaxSecs', '3')
         $log = Join-Path $data 'widget.log'
         # Given up once, tried again (status 0 may pass), given up again: logged as a plain timeout
