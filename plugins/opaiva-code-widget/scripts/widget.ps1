@@ -21,7 +21,9 @@ param(
     # Claude Code settings: its "env" block holds the CLAUDE_WIDGET_* options (the widget is started through WMI)
     [string]$SettingsPath = (Join-Path $env:USERPROFILE '.claude\settings.json'),
     # Tests only: the fake Bot API of tests\helpers\FakeTelegram.ps1. Never read from settings.
-    [string]$TelegramUrl = 'https://api.telegram.org'
+    [string]$TelegramUrl = 'https://api.telegram.org',
+    # Tests only: how long a Bot API call may run before the widget gives up on it
+    [int]$TelegramCallMaxSecs = 60
 )
 $RenderMode = [bool]$RenderSamples
 $ErrorActionPreference = 'Stop'
@@ -1505,8 +1507,32 @@ try {
         return @{ ps = $ps; handle = $ps.BeginInvoke(); started = Get-NowMs }
     }
 
+    # A runspace that never ends (a DNS lookup that hangs ignores the call's own timeout) would hold the one call
+    # slot forever: past $TelegramCallMaxSecs the call is given up on and ends as a timeout (status 0, so the retry
+    # rules apply). It is stopped without waiting (Stop() would block the UI thread on the stuck call) and
+    # disposed once that stop completes: $script:tgStopping, emptied by Clear-TelegramStopped.
+    $script:tgStopping = New-Object System.Collections.ArrayList
+    function Test-TelegramCallDone($Call) {
+        if ($Call.handle.IsCompleted) { return $true }
+        if ((Get-NowMs) - [int64]$Call.started -lt [int64]$TelegramCallMaxSecs * 1000) { return $false }
+        $Call.timedOut = $true
+        return $true
+    }
+    function Clear-TelegramStopped {
+        foreach ($z in @($script:tgStopping)) {
+            if (-not $z.stop.IsCompleted) { continue }
+            try { $z.ps.EndStop($z.stop) } catch {}
+            try { $z.ps.Dispose() } catch {}
+            $script:tgStopping.Remove($z)
+        }
+    }
+
     # The outcome of a finished call: @{ ok = $true; result } or @{ ok = $false; status; description }
     function Receive-TelegramCall($Call) {
+        if ($Call.timedOut) {
+            try { [void]$script:tgStopping.Add(@{ ps = $Call.ps; stop = $Call.ps.BeginStop($null, $null) }) } catch {}
+            return @{ ok = $false; status = 0; description = 'timeout' }
+        }
         try {
             $out = @($Call.ps.EndInvoke($Call.handle))
             if ($out.Count -gt 0 -and $out[-1] -is [hashtable]) { return $out[-1] }
@@ -1674,7 +1700,7 @@ try {
     # Every tick: ends the call that finished, keeps the setup's long poll going, starts the next queued call
     function Update-TelegramUi {
         if ($script:tgUiCall) {
-            if (-not $script:tgUiCall.call.handle.IsCompleted) { return }
+            if (-not (Test-TelegramCallDone $script:tgUiCall.call)) { return }
             $job = $script:tgUiCall
             $script:tgUiCall = $null
             Complete-TelegramUiCall $job (Receive-TelegramCall $job.call)
@@ -1740,8 +1766,9 @@ try {
 
     # Every ~2 s from the timer, before Update-View: that one stops in do not disturb, these alerts do not
     function Update-Alerts {
+        Clear-TelegramStopped
         if ($script:tgCall) {
-            if (-not $script:tgCall.call.handle.IsCompleted) { return }
+            if (-not (Test-TelegramCallDone $script:tgCall.call)) { return }
             Complete-TelegramCall
         }
         # One call at a time: a menu or setup call is running

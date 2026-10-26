@@ -677,10 +677,10 @@ Describe 'widget.ps1 Telegram alerts' -Tag 'Desktop' {
         function Set-TgAwaySecs([string]$Data, [string]$AwaySecs) {
             [IO.File]::WriteAllText((Join-Path $Data 'settings.json'), ('{"env":{"CLAUDE_WIDGET_AWAY_SECS":"' + $AwaySecs + '"}}'))
         }
-        function Start-TgWidget([string]$Data, [string]$Url) {
-            Start-Process powershell.exe -PassThru -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
+        function Start-TgWidget([string]$Data, [string]$Url, [string[]]$Extra = @()) {
+            Start-Process powershell.exe -PassThru -ArgumentList (@('-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
                 '-File', ('"{0}"' -f $widget), '-DataDir', ('"{0}"' -f $Data), '-Lang', 'en',
-                '-SettingsPath', ('"{0}"' -f (Join-Path $Data 'settings.json')), '-TelegramUrl', $Url
+                '-SettingsPath', ('"{0}"' -f (Join-Path $Data 'settings.json')), '-TelegramUrl', $Url) + $Extra)
         }
         function Stop-TgWidget($Proc) {
             if ($Proc) { Stop-Process -Id $Proc.Id -Force -ErrorAction SilentlyContinue; [void]$Proc.WaitForExit(5000) }
@@ -818,6 +818,22 @@ Describe 'widget.ps1 Telegram alerts' -Tag 'Desktop' {
             $r.Count -gt 0 -and ($r[0][3] - $r[0][1]) -gt ($pillHeight + 40)
         } 2
         $grew | Should -BeTrue
+    }
+
+    It 'gives up on a call that never ends, frees the slot and logs a timeout without the token' {
+        # A runspace stuck past the watchdog (a DNS lookup that never returns, 60 s for real, 3 s here): the fake holds
+        # the reply for 15 s, longer than the watchdog and than the call's own 10 s timeout
+        $fake.Replies['sendMessage'] = @{ status = 200; body = $script:SendOk; delayMs = 15000 }
+        $data = New-TgSandbox
+        $queue = Join-Path $data 'queue'
+        [void](Add-AlertOutbox $queue @{ kind = 'permission'; session = 's1'; cwd = 'C:\devlpha'; detail = 'Bash: npm test'; reason = 'timeout' })
+        $proc = Start-TgWidget $data $fake.Url @('-TelegramCallMaxSecs', '3')
+        $log = Join-Path $data 'widget.log'
+        # Given up once, tried again (status 0 may pass), given up again: logged as a plain timeout
+        (Wait-Until { (Test-Path -LiteralPath $log) -and ([IO.File]::ReadAllText($log) -cmatch 'telegram: 0 timeout(?
+|$)') } 25) | Should -BeTrue
+        [IO.File]::ReadAllText($log).Contains($script:Token) | Should -BeFalse
+        $proc.HasExited | Should -BeFalse
     }
 
     It 'logs a failed send without the token, and does not retry a refusal' {
