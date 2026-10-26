@@ -358,6 +358,7 @@ Describe 'hook.ps1 end to end' {
             $tg[0].cwd | Should -BeExactly $box.Data
             $tg[0].detail | Should -BeExactly 'Bash: npm test'
             (Get-QueueFiles $box 'wait-*.json').Count | Should -Be 0
+            (Read-QueueJson $box "alerted-$($evt.session_id).json")[0].session | Should -BeExactly $evt.session_id
         }
         It 'writes an outbox entry when a question times out' {
             $evt = New-QuestionEvent $box
@@ -451,6 +452,45 @@ Describe 'hook.ps1 end to end' {
             $after = (Read-QueueJson $box "wait-$($plan.session_id).json")[0]
             $after.kind | Should -BeExactly 'plan'
             $after.created | Should -Be $before.created
+        }
+        It 'a Notification right after an away alert writes no second marker; one after the session moved on does' {
+            $perm = New-BashEvent $box 'npm test'
+            $sid = $perm.session_id
+            [void](Complete-Hook (Start-Hook $box $perm -Env @{ CLAUDE_WIDGET_AWAY_SECS = '0' }))
+            (Get-QueueFiles $box 'tg-*.json').Count | Should -Be 1
+            $note = New-HookEvent 'Notification' $box.Data @{ notification_type = 'permission_prompt'; message = 'Claude needs your permission to use Bash' }
+            $note.session_id = $sid
+            [void](Complete-Hook (Start-Hook $box $note))
+            Join-Path $box.Queue "wait-$sid.json" | Should -Not -Exist
+            $prompt = New-HookEvent 'UserPromptSubmit' $box.Data @{ prompt = 'go' }
+            $prompt.session_id = $sid
+            [void](Complete-Hook (Start-Hook $box $prompt))
+            [void](Complete-Hook (Start-Hook $box $note))
+            Join-Path $box.Queue "wait-$sid.json" | Should -Exist
+        }
+        It 'a Notification writes no marker when the session moved on after it started' {
+            $note = New-HookEvent 'Notification' $box.Data @{ notification_type = 'permission_prompt'; message = 'm' }
+            New-Item -ItemType Directory -Force -Path $box.Queue | Out-Null
+            # Stands in for the next event's seen stamp landing while this async hook is still running
+            Write-JsonAtomic (Join-Path $box.Queue "seen-$($note.session_id).json") @{ session = $note.session_id; at = (Get-NowMs) + 60000 }
+            [void](Complete-Hook (Start-Hook $box $note))
+            Join-Path $box.Queue "wait-$($note.session_id).json" | Should -Not -Exist
+        }
+        It 'writes no Telegram file for an event without a session id' {
+            $events = @(
+                @{ Event = (New-HookEvent 'PermissionRequest' $box.Data @{ tool_name = 'ExitPlanMode'; tool_input = @{ plan = 'x' } }); Env = @{} },
+                @{ Event = (New-BashEvent $box 'ls'); Env = @{ CLAUDE_WIDGET_AWAY_SECS = '0' } },
+                @{ Event = (New-QuestionEvent $box); Env = @{ CLAUDE_WIDGET_AWAY_SECS = '0' } },
+                @{ Event = (New-HookEvent 'Notification' $box.Data @{ notification_type = 'permission_prompt'; message = 'm' }); Env = @{} })
+            foreach ($e in $events) {
+                $e.Event.Remove('session_id')
+                $r = Complete-Hook (Start-Hook $box $e.Event -Env $e.Env)
+                $r.ExitCode | Should -Be 0
+            }
+            Set-Dnd $box.Data $true
+            $dnd = New-BashEvent $box 'ls'; $dnd.Remove('session_id')
+            [void](Complete-Hook (Start-Hook $box $dnd))
+            (Get-QueueFiles $box).Count | Should -Be 0
         }
         It 'the next event of the session removes its wait marker and stamps seen' {
             $plan = New-HookEvent 'PermissionRequest' $box.Data @{ tool_name = 'ExitPlanMode'; tool_input = @{ plan = 'x' } }

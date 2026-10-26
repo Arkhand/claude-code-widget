@@ -59,7 +59,9 @@ function Test-Widget {
     try { [System.Threading.Mutex]::OpenExisting($MutexName).Dispose(); return $true } catch { return $false }
 }
 
-function Start-Widget {
+# -NoWait: launch and return at once, without waiting for the widget to come up (the caller left its work
+# on disk for it)
+function Start-Widget([switch]$NoWait) {
     if (Test-Widget) {
         # After a plugin update the old widget keeps running from the old folder: replace it
         $info = $null
@@ -86,6 +88,7 @@ function Start-Widget {
     # Through WMI the widget is created outside Claude Code's process tree, so it outlives the session
     $si = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ ShowWindow = [uint16]0 }
     Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $cmd; ProcessStartupInformation = $si } | Out-Null
+    if ($NoWait) { return $true }
     # The very first start of new scripts can take ~10 s (antivirus scan); later starts take ~1-2 s
     for ($i = 0; $i -lt 200; $i++) {
         if (Test-Widget) { return $true }
@@ -417,6 +420,8 @@ function Test-RequestPending([string]$Queue, [string]$Session) {
 # Every other type is ignored, idle_prompt above all (finished ~60 s ago and you have not typed: the
 # finished notice covers it), and also auth_success, elicitation_complete/response, agent_needs_input /
 # agent_completed (background sessions in agent view), quota_auto_resume_* and plugin_notification.
+# hooks.json registers Notification with a matcher of these same three types, so the others do not even
+# start powershell.exe; this list stays the authoritative filter. Change both together.
 function Get-NotificationWaitKind([string]$Type) {
     switch ($Type) {
         'permission_prompt' { return 'permission' }
@@ -440,15 +445,26 @@ function Get-AlertAction($Res, [string]$WaitEnd) {
     return $null
 }
 
-# Queues the Telegram side of a request that goes to VS Code. Callers check Test-TelegramReady first.
-# $Why: 'wait' -> "waiting in VS Code" marker; 'away', 'timeout', 'idle' -> outbox entry to send now, with
-# that reason. For 'away' the widget is started first: it is the one that sends.
-function Send-RequestAlert([hashtable]$Alert, [string]$Why, [string]$LogTag) {
+# Queues the Telegram side of a request that goes to VS Code. Callers build $Alert only when Telegram is
+# ready and the event has a session. $Why: 'wait' -> "waiting in VS Code" marker; 'away', 'timeout', 'idle'
+# -> outbox entry to send now, with that reason, plus the session's alerted- stamp (the Notification that
+# Claude Code sends a few seconds later for the same prompt must not queue a second alert). The title is
+# read only here, unless the caller already has it. For 'away' the widget (the sender) is launched after
+# the entry is on disk, without waiting for it: the request goes to VS Code / your phone at once.
+function Send-RequestAlert([hashtable]$Alert, [string]$Why, [string]$LogTag, [string]$Transcript) {
+    if (-not $Alert -or -not $Alert.session) { return }
+    if (-not $Alert.ContainsKey('title')) { $Alert.title = Get-SessionTitle $Transcript $Alert.session }
     if ($Why -eq 'wait') { Invoke-AlertWrite { Set-WaitMarker $Queue $Alert } $LogTag; return }
-    if ($Why -eq 'away') { [void](Start-Widget) }
     $item = $Alert.Clone()
     $item.reason = $Why
     Invoke-AlertWrite { Add-AlertOutbox $Queue $item } $LogTag
+    Invoke-AlertWrite { Write-JsonAtomic (Join-Path $Queue "alerted-$($item.session).json") ([ordered]@{ session = $item.session; at = Get-NowMs }) -Replace } $LogTag
+    if ($Why -eq 'away') { [void](Start-Widget -NoWait) }
+}
+
+# The "at" of a session stamp (seen-<session>.json, alerted-<session>.json), 0 when there is none
+function Get-StampAt([string]$Queue, [string]$Prefix, [string]$Session) {
+    try { return [int64]([IO.File]::ReadAllText((Join-Path $Queue "$Prefix-$Session.json"), $Utf8) | ConvertFrom-Json).at } catch { return [int64]0 }
 }
 
 # What the permission card shows: the command, file, URL or query; otherwise the raw input
@@ -566,6 +582,15 @@ function Invoke-Hook($evt) {
         if (-not $tg -or -not $sid -or -not $kind) { return $null }
         # The widget holds the request: it alerts by itself if needed
         if (Test-RequestPending $Queue $sid) { Write-HookLog "$logTag $($evt.notification_type): request in the widget"; return $null }
+        $seenAt = Get-StampAt $Queue 'seen' $sid
+        # This hook runs async: if the session moved on after this process started (you answered right
+        # after the prompt), a marker written now would be left behind for a prompt already answered
+        $startMs = try { [DateTimeOffset]::new((Get-Process -Id $PID).StartTime).ToUnixTimeMilliseconds() } catch { Get-NowMs }
+        if ($seenAt -gt $startMs) { Write-HookLog "$logTag $($evt.notification_type): session moved on"; return $null }
+        # Nothing happened in the session since the hook alerted on a request (away, timeout, idle): this is
+        # the prompt of that same request, already alerted
+        $alertedAt = Get-StampAt $Queue 'alerted' $sid
+        if ($alertedAt -gt 0 -and $alertedAt -ge $seenAt) { Write-HookLog "$logTag $($evt.notification_type): already alerted"; return $null }
         # A marker written by the request itself (plan, handed to VS Code) is the same wait: keep its kind and age
         if (Test-Path -LiteralPath (Join-Path $Queue "wait-$sid.json")) { return $null }
         Invoke-AlertWrite { Set-WaitMarker $Queue @{ kind = $kind; session = $sid; cwd = $cwd; title = Get-SessionTitle $transcript $sid; detail = [string]$evt.message } } $logTag
@@ -620,17 +645,19 @@ function Invoke-Hook($evt) {
         if ($tool -ne 'AskUserQuestion') { return $null }
         $questions = @($in.questions)
         if ($questions.Count -eq 0) { return $null }
-        $title = Get-SessionTitle $transcript $sid
-        $alert = @{ kind = 'question'; session = $sid; cwd = $cwd; title = $title; detail = [string]$questions[0].question }
+        # Telegram's view of this question; $null without Telegram or a session (nothing extra is done then)
+        $alert = if ($tg -and $sid) { @{ kind = 'question'; session = $sid; cwd = $cwd; detail = [string]$questions[0].question } } else { $null }
         if (Test-Dnd $Data) {
             Write-HookLog "$logTag do not disturb: question goes to VS Code"
-            if ($tg) { Send-RequestAlert $alert $(if (Test-Away) { 'away' } else { 'wait' }) $logTag }
+            if ($alert) { Send-RequestAlert $alert $(if (Test-Away) { 'away' } else { 'wait' }) $logTag $transcript }
             return $null
         }
-        if (Test-Away) { Write-HookLog "$logTag idle: question goes to VS Code"; if ($tg) { Send-RequestAlert $alert 'away' $logTag }; return $null }
-        if (-not (Start-Widget)) { Write-HookLog "$logTag widget did not start"; if ($tg) { Send-RequestAlert $alert 'wait' $logTag }; return $null }
+        if (Test-Away) { Write-HookLog "$logTag idle: question goes to VS Code"; if ($alert) { Send-RequestAlert $alert 'away' $logTag $transcript }; return $null }
+        if (-not (Start-Widget)) { Write-HookLog "$logTag widget did not start"; if ($alert) { Send-RequestAlert $alert 'wait' $logTag $transcript }; return $null }
         Remove-Done $sid
 
+        $title = Get-SessionTitle $transcript $sid
+        if ($alert) { $alert.title = $title }
         $timeout = Get-RequestTimeout $prefs
         $id = New-Request 'question' $cwd $sid $timeout @{
             tool        = $tool
@@ -647,7 +674,7 @@ function Invoke-Hook($evt) {
         $why = if ($res) { [string]$res.decision } else { $script:waitEnd }
         Write-HookLog "$logTag goes to VS Code ($why)"
         $action = Get-AlertAction $res $script:waitEnd
-        if ($tg -and $action) { Send-RequestAlert $alert $action $logTag }
+        if ($alert -and $action) { Send-RequestAlert $alert $action $logTag $transcript }
         return $null
     }
 
@@ -655,34 +682,33 @@ function Invoke-Hook($evt) {
     if ($hookEvent -eq 'PermissionRequest') {
         # Plan approval waits in VS Code (never in the widget): only the marker for Telegram -> normal flow
         if ($tool -eq 'ExitPlanMode') {
-            if ($tg) {
-                $plan = @{ kind = 'plan'; session = $sid; cwd = $cwd; title = Get-SessionTitle $transcript $sid; detail = Format-Snippet ([string]$in.plan) }
-                Send-RequestAlert $plan 'wait' $logTag
-            }
+            if ($tg -and $sid) { Send-RequestAlert @{ kind = 'plan'; session = $sid; cwd = $cwd; detail = Format-Snippet ([string]$in.plan) } 'wait' $logTag $transcript }
             return $null
         }
         # Questions are handled on PreToolUse -> normal flow
         if ($tool -eq 'AskUserQuestion') { return $null }
 
+        # Telegram's view of this request; $null without Telegram or a session (nothing extra is done then)
+        $alert = if ($tg -and $sid) { @{ kind = 'permission'; session = $sid; cwd = $cwd; detail = "${tool}: $(Get-PermissionDetail $in)" } } else { $null }
+        if (Test-Dnd $Data) {
+            Write-HookLog "$logTag $tool do not disturb: goes to VS Code"
+            if ($alert) { Send-RequestAlert $alert $(if (Test-Away) { 'away' } else { 'wait' }) $logTag $transcript }
+            return $null
+        }
+        if (Test-Away) { Write-HookLog "$logTag $tool idle: goes to VS Code"; if ($alert) { Send-RequestAlert $alert 'away' $logTag $transcript }; return $null }
+
         $detail = Get-PermissionDetail $in
         $desc = [string]$in.description
         if (-not $desc) { $desc = $S.wantsTool -f $tool }
-        $title = Get-SessionTitle $transcript $sid
-        $alert = @{ kind = 'permission'; session = $sid; cwd = $cwd; title = $title; detail = "${tool}: $detail" }
-
-        if (Test-Dnd $Data) {
-            Write-HookLog "$logTag $tool do not disturb: goes to VS Code"
-            if ($tg) { Send-RequestAlert $alert $(if (Test-Away) { 'away' } else { 'wait' }) $logTag }
-            return $null
-        }
-        if (Test-Away) { Write-HookLog "$logTag $tool idle: goes to VS Code"; if ($tg) { Send-RequestAlert $alert 'away' $logTag }; return $null }
 
         # Widget did not come up -> don't keep Claude Code waiting for nobody
-        if (-not (Start-Widget)) { Write-HookLog "$logTag widget did not start"; if ($tg) { Send-RequestAlert $alert 'wait' $logTag }; return $null }
+        if (-not (Start-Widget)) { Write-HookLog "$logTag widget did not start"; if ($alert) { Send-RequestAlert $alert 'wait' $logTag $transcript }; return $null }
         # The session is working again: its previous "finished" notice is stale
         Remove-Done $sid
 
         $offered = @(Get-OfferedSuggestions $evt.permission_suggestions)
+        $title = Get-SessionTitle $transcript $sid
+        if ($alert) { $alert.title = $title }
         $timeout = Get-RequestTimeout $prefs
         $id = New-Request 'permission' $cwd $sid $timeout @{
             tool        = $tool
@@ -697,7 +723,7 @@ function Invoke-Hook($evt) {
         $decision = if ($res) { [string]$res.decision } else { $null }
         Write-HookLog ("$logTag $tool -> " + $(if ($decision) { $decision } else { $script:waitEnd }))
         $action = Get-AlertAction $res $script:waitEnd
-        if ($tg -and $action) { Send-RequestAlert $alert $action $logTag }
+        if ($alert -and $action) { Send-RequestAlert $alert $action $logTag $transcript }
         if ($decision -eq 'allowAlways') {
             # Only the index counts: the content comes from Claude Code's own suggestions of this request
             $index = -1

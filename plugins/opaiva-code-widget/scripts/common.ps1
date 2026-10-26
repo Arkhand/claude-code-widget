@@ -542,10 +542,12 @@ function Test-TelegramReady([string]$Dir, $Prefs) {
 
 # ---------------- Telegram alerts (queue files and the decision) ----------------
 
-# The hook writes three kinds of small files in the queue folder and never touches the network:
+# The hook writes four kinds of small files in the queue folder and never touches the network:
 #   tg-<id>.json        send this now (the hook already decided: request timed out, went idle, or you are away)
 #   wait-<session>.json the session waits in VS Code: send only if it is still waiting at X and you are away
 #   seen-<session>.json the session moved on (any later hook event)
+#   alerted-<session>.json { session; at }: the hook queued a tg- entry for this session at that time (Unix
+#                       ms). A Notification with no seen- newer than it is the same prompt: no wait marker.
 # The widget reads them and asks Get-DueAlerts what to send.
 
 # The same cleaning hook.ps1 gives a session id before it goes into a file name

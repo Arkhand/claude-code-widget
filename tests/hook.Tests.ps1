@@ -422,3 +422,65 @@ Describe 'Get-AlertAction' {
         Get-AlertAction $res $waitEnd | Should -Be $action
     }
 }
+
+Describe 'Invoke-Hook on the paths that skip the widget' {
+    BeforeAll {
+        $queueDir = Join-Path $tmpData 'queue'
+        function New-TestEvent([string]$Kind) {
+            $json = if ($Kind -eq 'question') {
+                '{"hook_event_name":"PreToolUse","session_id":"unit-s1","cwd":"C:/p","transcript_path":"C:/p/t.jsonl","tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"Q?","header":"Q","multiSelect":false,"options":[{"label":"A","description":""}]}]}}'
+            } else {
+                '{"hook_event_name":"PermissionRequest","session_id":"unit-s1","cwd":"C:/p","transcript_path":"C:/p/t.jsonl","tool_name":"Bash","tool_input":{"command":"ls"}}'
+            }
+            return $json | ConvertFrom-Json
+        }
+    }
+    AfterEach {
+        Set-Dnd $tmpData $false
+        Remove-Item -LiteralPath (Join-Path $tmpData 'telegram.json'), (Join-Path $tmpData 'prefs.json') -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $queueDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    Context 'without Telegram: no transcript read (the title is only read for the widget card)' {
+        It 'do not disturb' {
+            Mock Get-SessionTitle { 'x' }
+            Set-Dnd $tmpData $true
+            foreach ($k in 'permission', 'question') { Invoke-Hook (New-TestEvent $k) | Should -BeNullOrEmpty }
+            Should -Invoke Get-SessionTitle -Times 0 -Exactly
+        }
+        It 'away' {
+            Mock Get-SessionTitle { 'x' }
+            Mock Test-Away { $true }
+            Mock Start-Widget { $true }
+            foreach ($k in 'permission', 'question') { Invoke-Hook (New-TestEvent $k) | Should -BeNullOrEmpty }
+            Should -Invoke Get-SessionTitle -Times 0 -Exactly
+            Should -Invoke Start-Widget -Times 0 -Exactly
+        }
+        It 'the widget did not start' {
+            Mock Get-SessionTitle { 'x' }
+            Mock Test-Away { $false }
+            Mock Start-Widget { $false }
+            foreach ($k in 'permission', 'question') { Invoke-Hook (New-TestEvent $k) | Should -BeNullOrEmpty }
+            Should -Invoke Get-SessionTitle -Times 0 -Exactly
+        }
+    }
+
+    Context 'with Telegram' {
+        BeforeEach {
+            [IO.File]::WriteAllText((Join-Path $tmpData 'telegram.json'), '{}')
+            [IO.File]::WriteAllText((Join-Path $tmpData 'prefs.json'), '{"telegram":true,"notifyAfter":1}')
+        }
+        It 'away: queues the alert first, then launches the widget without waiting for it' {
+            Mock Get-SessionTitle { 'T' }
+            Mock Test-Away { $true }
+            # Throws (failing the hook) if the widget were started before the entry is on disk
+            Mock Start-Widget { if (@(Get-ChildItem -LiteralPath $queueDir -Filter 'tg-*.json' -ErrorAction SilentlyContinue).Count -eq 0) { throw 'no outbox entry yet' }; $true }
+            Invoke-Hook (New-TestEvent 'permission') | Should -BeNullOrEmpty
+            Should -Invoke Start-Widget -Times 1 -Exactly -ParameterFilter { $NoWait }
+            $tg = [IO.File]::ReadAllText((Get-ChildItem -LiteralPath $queueDir -Filter 'tg-*.json')[0].FullName) | ConvertFrom-Json
+            $tg.title | Should -BeExactly 'T'
+            $tg.reason | Should -BeExactly 'away'
+            ([IO.File]::ReadAllText((Join-Path $queueDir 'alerted-unit-s1.json')) | ConvertFrom-Json).at | Should -BeGreaterThan 0
+        }
+    }
+}
