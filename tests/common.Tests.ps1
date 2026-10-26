@@ -1137,6 +1137,12 @@ Describe 'Get-DueAlerts' {
             $n.message = 'Which one?'
             (Get-Due -Notices @($n))[0].detail | Should -BeExactly 'Which one?'
         }
+        It 'a question notice is marked as a question, a plain one is not' {
+            $q = New-Notice ($script:Now - $script:After)
+            $q.question = $true
+            (Get-Due -Notices @($q))[0].question | Should -BeTrue
+            (Get-Due -Notices @(New-Notice ($script:Now - $script:After)))[0].question | Should -BeFalse
+        }
         It 'NoticeAfterMs sets when notices are due (notifyAfter 5, notices expire at 5): <age> s -> <count>' -ForEach @(
             @{ age = 286; count = 1 }, @{ age = 284; count = 0 }) {
             $n = New-Notice ($script:Now - $age * 1000)
@@ -1248,6 +1254,16 @@ Describe 'Format-AlertText' {
         @{ kind = 'permission'; key = 'tgPermission' }, @{ kind = 'question'; key = 'tgQuestion' },
         @{ kind = 'done'; key = 'tgDone' }, @{ kind = 'plan'; key = 'tgPlan' }) {
         (Format-AlertText @(New-Alert $kind) $script:S).StartsWith($script:S.$key + "`n") | Should -BeTrue
+    }
+    It 'a finished notice that asks a question gets the "question for you" header in <lang>' -ForEach @(
+        @{ lang = 'pt' }, @{ lang = 'en' }, @{ lang = 'es' }) {
+        $s = Get-Strings $lang
+        $s.tgDoneQuestion | Should -Not -BeNullOrEmpty
+        $s.tgDoneQuestion | Should -Not -Be $s.tgDone
+        $a = New-Alert 'done' 'Which one?'
+        $a.question = $true
+        (Format-AlertText @($a) $s).StartsWith($s.tgDoneQuestion + "`n") | Should -BeTrue
+        (Format-AlertText @(New-Alert 'done' 'All done') $s).StartsWith($s.tgDone + "`n") | Should -BeTrue
     }
     It 'a missing detail leaves no empty line' {
         $t = Format-AlertText @(New-Alert 'done' '') $script:S

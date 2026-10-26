@@ -684,7 +684,7 @@ function Set-SessionSeen([string]$Queue, [string]$Session) {
 # Pure: the caller passes what it read from disk. $Outbox are tg-*.json entries, $Notices are Get-DoneNotices
 # results, $Waits are wait-*.json markers, $Sent is the table of Read-SentAlerts. Each result is a hashtable:
 # key (what goes into $Sent), source (req|done|wait), kind (permission|question|plan|done), session, cwd,
-# title, detail, created, reason.
+# title, detail, created, reason, and for a notice question (it ends with a question for you).
 # $NoticeAfterMs (default $AfterMs) is the age at which a notice is due (for 60 s): the widget deletes notices at closeAfter,
 # so it passes Get-NoticeAlertMs, or a notice would be gone before it could ever alert.
 # This does not check that Telegram is connected: the caller only asks when it is.
@@ -717,7 +717,7 @@ function Get-DueAlerts($Outbox, $Notices, $Waits, $Sent, [int64]$NowMs, [int64]$
         $key = "done:$($n.key)"
         if ($sentKeys.ContainsKey($key)) { continue }
         [void]$due.Add(@{ key = $key; source = 'done'; kind = 'done'; session = [string]$n.session; cwd = [string]$n.cwd
-                          title = [string]$n.title; detail = [string]$n.message; created = $created; reason = '' })
+                          title = [string]$n.title; detail = [string]$n.message; created = $created; reason = ''; question = [bool]$n.question })
     }
 
     # Waiting in VS Code: at X, and only if you are not at the computer
@@ -752,6 +752,8 @@ function Format-AlertText($Alerts, $S) {
         if (-not $a) { continue }
         $lines = @()
         $header = $headers[[string]$a.kind]
+        # A finished notice that ends with a question for you (Claude desktop app) is not just "finished"
+        if ([string]$a.kind -eq 'done' -and $a.question) { $header = $S.tgDoneQuestion }
         if ($header) { $lines += $header }
         $session = Format-SessionLine ([string]$a.cwd) ([string]$a.title)
         if ($session) { $lines += $session }
