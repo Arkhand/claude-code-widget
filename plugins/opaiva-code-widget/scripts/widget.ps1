@@ -337,12 +337,28 @@ try {
         Set-Theme $name
     }
 
-    # --- Focus: only while typing a free-text answer ---
+    # --- Focus: only while typing (an "Other answer", the Telegram token) or while the right-click menu is open ---
+    # The first of the two to need it remembers where you were; the last one done gives the focus back there
+    $script:menuOpen = $false
+    function Open-Focus {
+        if ($script:typing -or $script:menuOpen) { return }
+        $script:prevFg = [ClaudeWidget.WinFocus]::Foreground()
+        [ClaudeWidget.WinFocus]::SetNoActivate($script:hwnd, $false)
+    }
+    function Close-Focus {
+        if ($script:typing -or $script:menuOpen) { return }
+        [ClaudeWidget.WinFocus]::SetNoActivate($script:hwnd, $true)
+        # Give focus back to where you were, if it is still on the widget
+        if ([ClaudeWidget.WinFocus]::Foreground() -eq $script:hwnd -and $script:prevFg -ne [IntPtr]::Zero) {
+            [void][ClaudeWidget.WinFocus]::Activate($script:prevFg)
+        }
+        $script:prevFg = [IntPtr]::Zero
+    }
+
     function Enable-Typing($box) {
         if ($script:canFocus -and $script:hwnd -ne [IntPtr]::Zero) {
             if (-not $script:typing) {
-                $script:prevFg = [ClaudeWidget.WinFocus]::Foreground()
-                [ClaudeWidget.WinFocus]::SetNoActivate($script:hwnd, $false)
+                Open-Focus
                 $script:typing = $true
             }
             [void][ClaudeWidget.WinFocus]::Activate($script:hwnd)
@@ -356,14 +372,21 @@ try {
     function Disable-Typing {
         if (-not $script:typing) { return }
         $script:typing = $false
-        if ($script:canFocus -and $script:hwnd -ne [IntPtr]::Zero) {
-            [ClaudeWidget.WinFocus]::SetNoActivate($script:hwnd, $true)
-            # Give focus back to where you were, if it is still on the widget
-            if ([ClaudeWidget.WinFocus]::Foreground() -eq $script:hwnd -and $script:prevFg -ne [IntPtr]::Zero) {
-                [void][ClaudeWidget.WinFocus]::Activate($script:prevFg)
-            }
-        }
-        $script:prevFg = [IntPtr]::Zero
+        if ($script:canFocus -and $script:hwnd -ne [IntPtr]::Zero) { Close-Focus }
+    }
+
+    # Windows gives mouse capture and deactivation only to the active window: a menu of a window that never has
+    # the focus did not close when you clicked elsewhere. The widget is the active window while its menu is open.
+    function Open-MenuFocus {
+        if (-not $script:canFocus -or $script:hwnd -eq [IntPtr]::Zero) { return }
+        Open-Focus
+        $script:menuOpen = $true
+        [void][ClaudeWidget.WinFocus]::Activate($script:hwnd)
+    }
+    function Close-MenuFocus {
+        if (-not $script:menuOpen) { return }
+        $script:menuOpen = $false
+        Close-Focus
     }
 
     function Set-Panel([string]$name) {
@@ -1111,6 +1134,11 @@ try {
     $closeItem.Header = $S.closeWidget
     $closeItem.Add_Click({ Close-Widget })
     [void]$menu.Items.Add($closeItem)
+    $menu.Add_Opened({ try { Open-MenuFocus } catch { Write-Log $_ } })
+    # Later, at Background priority: a menu item's Click comes after Closed, and one that starts typing keeps the focus
+    $menu.Add_Closed({
+        [void]$win.Dispatcher.BeginInvoke([System.Windows.Threading.DispatcherPriority]::Background, [Action]{ try { Close-MenuFocus } catch { Write-Log $_ } })
+    })
     $ui.Card.ContextMenu = $menu
     Sync-MenuChecks
     # The README screenshots are always drawn at normal opacity and size

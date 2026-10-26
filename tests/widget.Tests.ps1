@@ -100,6 +100,77 @@ namespace CcwTest {
 }
 '@
     }
+    if (-not ('CcwTest.Mouse' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+namespace CcwTest {
+    public static class Mouse {
+        [StructLayout(LayoutKind.Sequential)] struct POINT { public int X, Y; }
+        [DllImport("user32.dll")] static extern bool SetCursorPos(int x, int y);
+        [DllImport("user32.dll")] static extern bool GetCursorPos(out POINT p);
+        [DllImport("user32.dll")] static extern void mouse_event(uint flags, int dx, int dy, uint data, UIntPtr extra);
+        [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+        [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+        public static int[] Position() { POINT p; GetCursorPos(out p); return new int[] { p.X, p.Y }; }
+        public static void MoveTo(int x, int y) { SetCursorPos(x, y); }
+        // A real click (the left or the right button) at x, y
+        public static void Click(int x, int y, bool right) {
+            SetCursorPos(x, y);
+            mouse_event(right ? 0x0008u : 0x0002u, 0, 0, 0, UIntPtr.Zero);
+            mouse_event(right ? 0x0010u : 0x0004u, 0, 0, 0, UIntPtr.Zero);
+        }
+        public static int ForegroundPid() { uint pid; GetWindowThreadProcessId(GetForegroundWindow(), out pid); return (int)pid; }
+    }
+}
+'@
+    }
+    Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+    # The widget's window (the largest visible one: an open menu is a window of its own), or $null
+    function Get-WidgetRect($Proc) {
+        $best = $null
+        foreach ($r in [CcwTest.Windows]::Rects($Proc.Id)) {
+            if (-not $best -or ($r[2] - $r[0]) * ($r[3] - $r[1]) -gt ($best[2] - $best[0]) * ($best[3] - $best[1])) { $best = $r }
+        }
+        return $best
+    }
+    # Right-clicks the middle of the widget and waits for its menu (a second visible window) to open
+    function Open-WidgetMenu($Proc) {
+        $r = Get-WidgetRect $Proc
+        if (-not $r) { return $false }
+        [CcwTest.Mouse]::Click([int](($r[0] + $r[2]) / 2), [int](($r[1] + $r[3]) / 2), $true)
+        $deadline = (Get-Date).AddSeconds(5)
+        while ((Get-Date) -lt $deadline) {
+            if (@([CcwTest.Windows]::Rects($Proc.Id)).Count -ge 2) { return $true }
+            Start-Sleep -Milliseconds 100
+        }
+        return $false
+    }
+    # UI Automation: the first element of the widget process (its window or its open menu) with that name or
+    # automation id (the x:Name of a XAML element), shown on screen; $null when there is none
+    function Find-WidgetElement($Proc, [string]$Name = '', [string]$Id = '') {
+        $ae = [System.Windows.Automation.AutomationElement]
+        $mine = New-Object System.Windows.Automation.PropertyCondition($ae::ProcessIdProperty, [int]$Proc.Id)
+        $what = if ($Id) { New-Object System.Windows.Automation.PropertyCondition($ae::AutomationIdProperty, $Id) }
+        else { New-Object System.Windows.Automation.PropertyCondition($ae::NameProperty, $Name) }
+        foreach ($top in $ae::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children, $mine)) {
+            foreach ($el in $top.FindAll([System.Windows.Automation.TreeScope]::Subtree, $what)) {
+                if (-not $el.Current.IsOffscreen) { return $el }
+            }
+        }
+        return $null
+    }
+    function Wait-WidgetElement($Proc, [string]$Name = '', [string]$Id = '', [int]$Seconds = 10) {
+        $deadline = (Get-Date).AddSeconds($Seconds)
+        while ((Get-Date) -lt $deadline) {
+            $el = Find-WidgetElement $Proc -Name $Name -Id $Id
+            if ($el) { return $el }
+            Start-Sleep -Milliseconds 200
+        }
+        return $null
+    }
+    function Invoke-WidgetElement($El) { $El.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke() }
+    function Expand-WidgetElement($El) { $El.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern).Expand() }
     Add-Type -AssemblyName System.Windows.Forms
     # A real top-level window of this process, brought to the front (null when Windows does not allow it here).
     # The caller closes it.
@@ -521,6 +592,61 @@ Describe 'widget.ps1 preferences' -Tag 'Desktop' {
     It 'starts with garbage in prefs.json without errors' {
         $size = Get-PillSize '{"theme":7,"opacity":"x","scale":[1]}'
         $size | Should -Not -BeNullOrEmpty
+    }
+}
+
+Describe 'widget.ps1 right-click menu' -Tag 'Desktop' {
+    It 'closes when you click another window, and leaves the focus off the widget' {
+        $form = New-FrontWindow
+        if (-not $form) { Set-ItResult -Skipped -Because 'Windows did not let this process take the foreground'; return }
+        $data = Join-Path ([IO.Path]::GetTempPath()) ('ccw-widget-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path (Join-Path $data 'queue') | Out-Null
+        [IO.File]::WriteAllText((Join-Path $data 'state.json'), '{"right":520,"bottom":330}')
+        [IO.File]::WriteAllText((Join-Path $data 'prefs.json'), '{"volume":0}')
+        $cursor = [CcwTest.Mouse]::Position()
+        $proc = $null
+        try {
+            $proc = Start-Process powershell.exe -PassThru -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
+                '-File', ('"{0}"' -f $widget), '-DataDir', ('"{0}"' -f $data), '-Lang', 'en',
+                '-SettingsPath', ('"{0}"' -f (Join-Path $data 'settings.json'))
+            $deadline = (Get-Date).AddSeconds(30)
+            while ((Get-Date) -lt $deadline -and -not (Get-WidgetRect $proc)) { Start-Sleep -Milliseconds 250 }
+            Start-Sleep -Seconds 2
+            Open-WidgetMenu $proc | Should -BeTrue
+            # A click on another window, as on the desktop
+            [CcwTest.Mouse]::Click([int]($form.Left + $form.Width / 2), [int]($form.Top + $form.Height / 2), $false)
+            $closed = $false
+            $deadline = (Get-Date).AddSeconds(5)
+            while (-not $closed -and (Get-Date) -lt $deadline) {
+                [System.Windows.Forms.Application]::DoEvents()
+                $closed = @([CcwTest.Windows]::Rects($proc.Id)).Count -eq 1
+                if (-not $closed) { Start-Sleep -Milliseconds 100 }
+            }
+            $closed | Should -BeTrue
+            Start-Sleep -Milliseconds 500
+            [CcwTest.Mouse]::ForegroundPid() | Should -Not -Be $proc.Id
+
+            # Picking an item closes it too, and the focus goes back where it was
+            [void][CcwTest.Front]::Take($form.Handle)
+            [System.Windows.Forms.Application]::DoEvents()
+            Open-WidgetMenu $proc | Should -BeTrue
+            $S = Get-Strings 'en'
+            Expand-WidgetElement (Wait-WidgetElement $proc -Name $S.menuTheme)
+            Invoke-WidgetElement (Wait-WidgetElement $proc -Name $S.themeDark)
+            $deadline = (Get-Date).AddSeconds(5)
+            while ((Get-Date) -lt $deadline -and @([CcwTest.Windows]::Rects($proc.Id)).Count -gt 1) { [System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 100 }
+            @([CcwTest.Windows]::Rects($proc.Id)).Count | Should -Be 1
+            Start-Sleep -Milliseconds 500
+            [System.Windows.Forms.Application]::DoEvents()
+            [CcwTest.Front]::Current() | Should -Be $form.Handle
+            Join-Path $data 'widget.log' | Should -Not -Exist
+        }
+        finally {
+            [CcwTest.Mouse]::MoveTo($cursor[0], $cursor[1])
+            if ($proc) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue; [void]$proc.WaitForExit(5000) }
+            $form.Close()
+            Remove-Item -LiteralPath $data -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
 }
 
