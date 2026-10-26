@@ -1590,6 +1590,8 @@ try {
     # Cancel, and Done once connected: the card goes (a call still running for it is ignored when it ends)
     function Close-Setup {
         $script:setup = $null
+        # The token must not stay in the hidden box (Complete-Setup already cleared it when connected)
+        $ui.TgToken.Text = ''
         Disable-Typing
         Update-View
     }
@@ -1622,7 +1624,9 @@ try {
         }
         Set-Pref 'telegram' $true
         Request-TelegramUiCall 'send' 'Send-TelegramText' @($st.token, [string]$Found.chat, $S.tgTest)
+        # Saved encrypted now: no plain copy stays in the setup state or in the hidden token box
         $st.token = ''
+        $ui.TgToken.Text = ''
         $st.name = [string]$Found.name
         $st.step = 'done'
         $st.error = ''
