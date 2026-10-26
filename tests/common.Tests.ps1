@@ -944,6 +944,24 @@ Describe 'Telegram connection storage' {
         [IO.File]::WriteAllText((Join-Path $script:Dir 'telegram.json'), '{"token": ')
         Read-TelegramConfig $script:Dir | Should -BeNullOrEmpty
     }
+    It 'Read-TelegramInfo gives bot and name without the token' {
+        Save-TelegramConfig $script:Dir $script:FakeToken '987654321' 'my_test_bot' 'Dani' | Should -BeTrue
+        $i = Read-TelegramInfo $script:Dir
+        $i.bot | Should -BeExactly 'my_test_bot'
+        $i.name | Should -BeExactly 'Dani'
+        $i.ContainsKey('token') | Should -BeFalse
+    }
+    It 'Read-TelegramInfo does not decrypt (a token from another user still gives the bot)' {
+        [IO.File]::WriteAllText((Join-Path $script:Dir 'telegram.json'), '{"token":"not-a-dpapi-blob","chat":"1","bot":"b","name":"n"}')
+        (Read-TelegramInfo $script:Dir).bot | Should -BeExactly 'b'
+    }
+    It 'Read-TelegramInfo is $null for a missing file, a broken one or one without a token' {
+        Read-TelegramInfo $script:Dir | Should -BeNullOrEmpty
+        [IO.File]::WriteAllText((Join-Path $script:Dir 'telegram.json'), '{"token": ')
+        Read-TelegramInfo $script:Dir | Should -BeNullOrEmpty
+        [IO.File]::WriteAllText((Join-Path $script:Dir 'telegram.json'), '{"bot":"b","name":"n"}')
+        Read-TelegramInfo $script:Dir | Should -BeNullOrEmpty
+    }
     It 'removes the connection and ignores a missing one' {
         Save-TelegramConfig $script:Dir $script:FakeToken '1' 'b' 'n' | Out-Null
         Remove-TelegramConfig $script:Dir

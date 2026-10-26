@@ -613,6 +613,18 @@ function Read-TelegramConfig([string]$Dir) {
     } catch { return $null }
 }
 
+# What the menu caption needs (@{ bot; name }, kept in clear) without decrypting the token, or $null when there is
+# no connection (missing or broken file, no token). Never throws.
+function Read-TelegramInfo([string]$Dir) {
+    try {
+        $path = Join-Path $Dir 'telegram.json'
+        if (-not (Test-Path -LiteralPath $path)) { return $null }
+        $j = [IO.File]::ReadAllText($path, (Get-Utf8NoBom)) | ConvertFrom-Json
+        if (-not $j -or -not $j.token) { return $null }
+        return @{ bot = [string]$j.bot; name = [string]$j.name }
+    } catch { return $null }
+}
+
 # Disconnects: deletes telegram.json. A missing file is fine.
 function Remove-TelegramConfig([string]$Dir) {
     try { Remove-Item -LiteralPath (Join-Path $Dir 'telegram.json') -Force -ErrorAction SilentlyContinue } catch {}

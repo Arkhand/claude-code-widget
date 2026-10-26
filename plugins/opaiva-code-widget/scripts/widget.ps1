@@ -1161,8 +1161,8 @@ try {
         $tg.Items.Clear()
         # The old "Alert after" choices leave with their items
         foreach ($e in @($script:prefItems | Where-Object { $_.key -eq 'notifyAfter' })) { $script:prefItems.Remove($e) }
-        # (the README screenshots never read the real connection)
-        $cfg = if ($RenderMode) { $null } else { Read-TelegramConfig $Data }
+        # (the README screenshots never read the real connection; the caption needs no token, so none is decrypted)
+        $cfg = if ($RenderMode) { $null } else { Read-TelegramInfo $Data }
         if ($cfg) {
             $on = New-MenuEntry $S.tgAlertsOn { param($src, $e) Set-Pref 'telegram' (-not [bool]$script:prefs.telegram); $src.IsChecked = [bool]$script:prefs.telegram }
             $on.IsChecked = [bool]$script:prefs.telegram
