@@ -657,6 +657,163 @@ Describe 'widget.ps1 right-click menu' -Tag 'Desktop' {
     }
 }
 
+Describe 'widget.ps1 right-click menu stacking' -Tag 'Desktop' {
+    BeforeAll {
+        if (-not ('CcwTest.ZOrder' -as [type])) {
+            Add-Type -TypeDefinition @"
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+namespace CcwTest {
+    public static class ZOrder {
+        delegate bool EnumProc(IntPtr h, IntPtr l);
+        [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr l);
+        [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+        [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+        // Visible top-level windows of one process, topmost first (EnumWindows walks the z-order from the top)
+        public static List<long> Handles(int pid) {
+            var list = new List<long>();
+            EnumWindows((h, l) => {
+                uint owner;
+                GetWindowThreadProcessId(h, out owner);
+                if (owner == pid && IsWindowVisible(h)) list.Add(h.ToInt64());
+                return true;
+            }, IntPtr.Zero);
+            return list;
+        }
+    }
+}
+"@
+        }
+    }
+    It 'opens the menu above the widget, every time' {
+        $data = Join-Path ([IO.Path]::GetTempPath()) ('ccw-widget-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path (Join-Path $data 'queue') | Out-Null
+        [IO.File]::WriteAllText((Join-Path $data 'state.json'), '{"right":520,"bottom":330}')
+        [IO.File]::WriteAllText((Join-Path $data 'prefs.json'), '{"volume":0}')
+        $cursor = [CcwTest.Mouse]::Position()
+        $proc = $null
+        try {
+            $proc = Start-Process powershell.exe -PassThru -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
+                '-File', ('"{0}"' -f $widget), '-DataDir', ('"{0}"' -f $data), '-Lang', 'en',
+                '-SettingsPath', ('"{0}"' -f (Join-Path $data 'settings.json'))
+            Wait-WidgetShown $proc $data | Should -BeTrue
+            $main = @([CcwTest.ZOrder]::Handles($proc.Id))
+            $main.Count | Should -Be 1
+            $below = 0
+            for ($i = 0; $i -lt 5; $i++) {
+                Open-WidgetMenu $proc | Should -BeTrue
+                # Let the widget's own reaction to the open menu (taking the focus) happen first
+                Start-Sleep -Milliseconds 400
+                $order = @([CcwTest.ZOrder]::Handles($proc.Id))
+                $menuAt = -1
+                for ($k = 0; $k -lt $order.Count; $k++) { if ($order[$k] -ne $main[0]) { $menuAt = $k; break } }
+                if ($menuAt -gt [array]::IndexOf($order, $main[0])) { $below++ }
+                [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
+                $deadline = (Get-Date).AddSeconds(5)
+                while ((Get-Date) -lt $deadline -and @([CcwTest.ZOrder]::Handles($proc.Id)).Count -gt 1) { Start-Sleep -Milliseconds 100 }
+                Start-Sleep -Milliseconds 300
+            }
+            $below | Should -Be 0 -Because 'the menu was under the widget that many times out of 5'
+        }
+        finally {
+            [CcwTest.Mouse]::MoveTo($cursor[0], $cursor[1])
+            if ($proc) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue; [void]$proc.WaitForExit(5000) }
+            Remove-Item -LiteralPath $data -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+Describe 'widget.ps1 sessions list' -Tag 'Desktop' {
+    It 'the + button opens the list at once, and a double click on a row brings that session window to the front' {
+        $session = New-FrontWindow
+        if (-not $session) { Set-ItResult -Skipped -Because 'Windows did not let this process take the foreground'; return }
+        $other = New-FrontWindow
+        $other.Location = New-Object System.Drawing.Point 220, 400
+        [void][CcwTest.Front]::Take($other.Handle)
+        $data = Join-Path ([IO.Path]::GetTempPath()) ('ccw-widget-' + [guid]::NewGuid().ToString('N'))
+        foreach ($d in 'queue', 'busy', 'sessions') { New-Item -ItemType Directory -Path (Join-Path $data $d) | Out-Null }
+        [IO.File]::WriteAllText((Join-Path $data 'state.json'), '{"right":520,"bottom":330}')
+        [IO.File]::WriteAllText((Join-Path $data 'prefs.json'), '{"volume":0}')
+        # One working session (this test process stands in for Claude Code), its window remembered as $session
+        $transcript = Join-Path $data 't.jsonl'
+        [IO.File]::WriteAllText($transcript, '')
+        $sid = 'aaaaaaaa-0000-0000-0000-000000000001'
+        Write-JsonAtomic (Join-Path $data "busy\$sid.json") @{ since = (Get-NowMs) - 60000; pid = $PID; cwd = 'C:\dev\rowproject'; transcript = $transcript }
+        Write-JsonAtomic (Join-Path $data "sessions\$sid.json") @{ hwnd = $session.Handle.ToInt64(); process = 'powershell.exe'; kind = 'terminal' }
+        $cursor = [CcwTest.Mouse]::Position()
+        $proc = $null
+        try {
+            $proc = Start-Process powershell.exe -PassThru -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
+                '-File', ('"{0}"' -f $widget), '-DataDir', ('"{0}"' -f $data), '-Lang', 'en',
+                '-SettingsPath', ('"{0}"' -f (Join-Path $data 'settings.json'))
+            Wait-WidgetShown $proc $data | Should -BeTrue
+            $toggle = Wait-WidgetElement $proc -Id 'SessionsToggleText'
+            $toggle | Should -Not -BeNullOrEmpty
+            $toggle.Current.Name | Should -BeExactly '+'
+            # Time from a click to the widget growing (the list opening), with plain Win32 calls: UI Automation is too slow to time
+            function Measure-Open([int]$X, [int]$Y) {
+                $h0 = (Get-WidgetRect $proc)[3] - (Get-WidgetRect $proc)[1]
+                $t0 = Get-Date
+                [CcwTest.Mouse]::Click($X, $Y, $false)
+                while (((Get-Date) - $t0).TotalMilliseconds -lt 3000) {
+                    $g = Get-WidgetRect $proc
+                    if ($g -and ($g[3] - $g[1]) -gt $h0) { return ((Get-Date) - $t0).TotalMilliseconds }
+                    Start-Sleep -Milliseconds 15
+                }
+                return -1
+            }
+            $b = $toggle.Current.BoundingRectangle
+            $tx = [int]($b.X + $b.Width / 2); $ty = [int]($b.Y + $b.Height / 2)
+            # The old way: a click on the pill text waits out the double-click time before opening the list
+            $title = (Find-WidgetElement $proc -Id 'IdleTitle').Current.BoundingRectangle
+            $viaPill = Measure-Open ([int]($title.X + $title.Width / 2)) ([int]($title.Y + $title.Height / 2))
+            $viaPill | Should -BeGreaterOrEqual 0
+            Start-Sleep -Milliseconds 800
+            [CcwTest.Mouse]::Click($tx, $ty, $false)
+            Start-Sleep -Milliseconds 800
+            (Find-WidgetElement $proc -Id 'SessionsToggleText').Current.Name | Should -BeExactly '+'
+            # The + button opens it at once
+            $viaButton = Measure-Open $tx $ty
+            $viaButton | Should -BeGreaterOrEqual 0
+            $viaButton | Should -BeLessThan ($viaPill - 250) -Because "pill $([int]$viaPill) ms, button $([int]$viaButton) ms"
+            (Find-WidgetElement $proc -Id 'SessionsToggleText').Current.Name | Should -BeExactly ([string][char]0x2212)
+            $row = Wait-WidgetElement $proc -Name 'rowproject' -Seconds 3
+            $row | Should -Not -BeNullOrEmpty
+            (Find-WidgetElement $proc -Id 'SessionsToggleText').Current.Name | Should -BeExactly ([string][char]0x2212)
+
+            $r = $row.Current.BoundingRectangle
+            $rx = [int]($r.X + $r.Width / 2); $ry = [int]($r.Y + $r.Height / 2)
+            # A single click on a row does nothing: the list stays open and the other window stays in front
+            [CcwTest.Mouse]::Click($rx, $ry, $false)
+            Start-Sleep -Milliseconds ([System.Windows.Forms.SystemInformation]::DoubleClickTime + 300)
+            [System.Windows.Forms.Application]::DoEvents()
+            [CcwTest.Front]::Current() | Should -Not -Be $session.Handle
+            (Find-WidgetElement $proc -Name 'rowproject') | Should -Not -BeNullOrEmpty
+            # A double click goes to the session
+            [CcwTest.Mouse]::Click($rx, $ry, $false)
+            [CcwTest.Mouse]::Click($rx, $ry, $false)
+            $front = $false
+            $deadline = (Get-Date).AddSeconds(3)
+            while (-not $front -and (Get-Date) -lt $deadline) {
+                [System.Windows.Forms.Application]::DoEvents()
+                $front = [CcwTest.Front]::Current() -eq $session.Handle
+                if (-not $front) { Start-Sleep -Milliseconds 100 }
+            }
+            $log = Join-Path $data 'widget.log'
+            $front | Should -BeTrue -Because $(if (Test-Path -LiteralPath $log) { [IO.File]::ReadAllText($log) } else { 'no widget.log' })
+            $log | Should -Not -Exist
+        }
+        finally {
+            [CcwTest.Mouse]::MoveTo($cursor[0], $cursor[1])
+            if ($proc) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue; [void]$proc.WaitForExit(5000) }
+            $session.Close()
+            $other.Close()
+            Remove-Item -LiteralPath $data -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 Describe 'widget.ps1 Telegram alerts' -Tag 'Desktop' {
     BeforeAll {
         . (Join-Path $PSScriptRoot 'helpers\FakeTelegram.ps1')

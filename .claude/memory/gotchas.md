@@ -20,6 +20,8 @@ metadata:
 - **ExitPlanMode** nunca se rutea al widget (a propósito).
 - **`[IO.File]::Replace` no es atómico para lectores:** medido con un lector martillando el archivo, ve `FileNotFound` en el medio igual que borrar+mover. Lo atómico es `MoveFileEx` con replace-existing (`[Microsoft.VisualBasic.FileIO.FileSystem]::MoveFile(src, dst, $true)`), que falla si un lector tiene el archivo abierto sin share-delete (reintentar). `Save-Prefs` lo usa; `Write-JsonAtomic -Replace` sigue con `Replace` (2.7.0).
 - **Tests Desktop con la sesión bloqueada:** con Windows bloqueado (LogonUI corriendo, pantalla negra) el click derecho real no abre el menú: todos los tests de menú/wizard fallan en `Open-WidgetMenu`. No es regresión; correrlos con la sesión desbloqueada.
+- **`claude-app.ps1` es FRÁGIL a propósito:** elige la sesión en la barra lateral de la app de Claude leyendo su árbol de accesibilidad (Electron lo arma recién cuando alguien lo pide: `AccessibleObjectFromWindow` sobre `Chrome_RenderWidgetHostHWND`). Depende de los textos de la app ("Más opciones para <título>", "Bifurcado de"). Si falla: borrar el archivo, sus dos llamadas `Start-ClaudeAppSelect` en widget.ps1 y `tests/claude-app.Tests.ps1`. Con títulos repetidos (forks) no adivina.
+- **Tests Desktop y el usuario:** mueven el mouse real; si Daniel usa la PC mientras corren, fallan en puntos distintos cada vez. Repetir los que fallen antes de sospechar del código.
 
 **Why:** cada punto costó tiempo de debugging (al autor original o a Daniel en 2.6.0).
 **How to apply:** revisar antes de tocar hook.ps1 o el loop del widget. Ver [[arquitectura]].

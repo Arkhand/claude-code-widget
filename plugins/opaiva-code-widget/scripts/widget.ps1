@@ -31,6 +31,8 @@ $Utf8 = New-Object System.Text.UTF8Encoding $false
 . (Join-Path $PSScriptRoot 'common.ps1')
 # The Bot API client: its calls only ever run in background runspaces (see "Telegram alerts")
 . (Join-Path $PSScriptRoot 'telegram.ps1')
+# FRAGILE (see its header): picks a session inside the Claude desktop app; delete with its two callers if it fails
+. (Join-Path $PSScriptRoot 'claude-app.ps1')
 $Data = [IO.Path]::GetFullPath($DataDir).TrimEnd('\')
 $Queue = Join-Path $Data 'queue'
 $StatePath = Join-Path $Data 'state.json'
@@ -154,7 +156,7 @@ try {
 
     $win = [Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader $xaml))
     $ui = @{}
-    foreach ($n in 'Card', 'IdlePanel', 'IdleDot', 'IdleTitle', 'IdleText', 'SessionsList', 'ChangeBox', 'ChangeLines', 'AlwaysList', 'ReqPanel', 'ReqTitle', 'QPanel', 'QTitle', 'DonePanel',
+    foreach ($n in 'Card', 'IdlePanel', 'IdleDot', 'IdleTitle', 'IdleText', 'SessionsToggle', 'SessionsToggleText', 'SessionsList', 'ChangeBox', 'ChangeLines', 'AlwaysList', 'ReqPanel', 'ReqTitle', 'QPanel', 'QTitle', 'DonePanel',
         'ReqDot', 'Countdown', 'Tool', 'ProjectChip', 'Project', 'QueueChip', 'QueueText', 'Desc', 'Detail', 'Cwd',
         'BtnApprove', 'BtnDeny', 'BtnVs', 'QCountdown', 'QDot', 'QProjectChip', 'QProject', 'QQueueChip', 'QQueueText',
         'QList', 'BtnAnswer', 'BtnQVs',
@@ -392,11 +394,15 @@ try {
 
     # Windows gives mouse capture and deactivation only to the active window: a menu of a window that never has
     # the focus did not close when you clicked elsewhere. The widget is the active window while its menu is open.
-    function Open-MenuFocus {
+    # Activating the widget lifts it above every always-on-top window, its own open menu included: the menu goes
+    # back on top right after, or the widget covers part of it.
+    function Open-MenuFocus($Menu) {
         if (-not $script:canFocus -or $script:hwnd -eq [IntPtr]::Zero) { return }
         Open-Focus
         $script:menuOpen = $true
         [void][ClaudeWidget.WinFocus]::Activate($script:hwnd)
+        $src = if ($Menu) { [System.Windows.PresentationSource]::FromVisual($Menu) } else { $null }
+        if ($src) { [ClaudeWidget.WinFocus]::RaiseTopmost($src.Handle) }
     }
     function Close-MenuFocus {
         if (-not $script:menuOpen) { return }
@@ -776,7 +782,7 @@ try {
                 $c = @{ at = Get-NowMs; text = (Get-SessionTitle $b.transcript $b.id) }
                 $script:titles[$b.id] = $c
             }
-            [pscustomobject]@{ cwd = $b.cwd; title = $(if ($c) { $c.text } else { '' }); since = $b.since; waiting = $waiting.ContainsKey($b.cwd) }
+            [pscustomobject]@{ id = $b.id; cwd = $b.cwd; title = $(if ($c) { $c.text } else { '' }); since = $b.since; waiting = $waiting.ContainsKey($b.cwd) }
         }
     }
     # Pill text ("no requests" / "N working") and, while open, one row per session (at most 8)
@@ -786,6 +792,8 @@ try {
         $ui.IdleText.Text = $Sep + $(if ($rows.Count -eq 0) { $S.idle } elseif ($rows.Count -eq 1) { $S.workingOne } else { $S.workingMany -f $rows.Count })
         Update-IdleLook
         if ($rows.Count -eq 0) { $script:sessionsOpen = $false }
+        $ui.SessionsToggle.Visibility = if ($rows.Count -gt 0 -and -not [bool]$script:prefs.minimal) { 'Visible' } else { 'Collapsed' }
+        $ui.SessionsToggleText.Text = if ($script:sessionsOpen) { [string][char]0x2212 } else { '+' }
         $list = $ui.SessionsList
         $list.Children.Clear()
         $list.Visibility = if ($script:sessionsOpen) { 'Visible' } else { 'Collapsed' }
@@ -793,6 +801,12 @@ try {
         foreach ($r in @($rows | Select-Object -First 8)) {
             $row = New-Object System.Windows.Controls.DockPanel
             $row.Margin = '0,3,0,3'
+            # A double click on a row goes to that session; a single click does nothing (handled: it neither drags
+            # the widget nor toggles the list)
+            $row.Background = [System.Windows.Media.Brushes]::Transparent
+            $row.Cursor = [System.Windows.Input.Cursors]::Hand
+            $row.Tag = $r
+            $row.Add_MouseLeftButtonDown({ param($src, $e) $e.Handled = $true; if ($e.ClickCount -eq 2) { try { Open-SessionRow $src.Tag } catch { Write-Log $_ } } })
             $dot = New-Object System.Windows.Shapes.Ellipse
             $dot.Width = 7
             $dot.Height = 7
@@ -824,6 +838,59 @@ try {
         $script:sessionsOpen = -not $script:sessionsOpen
         $script:sessionsAt = 0
         Update-Sessions
+    }
+    # The +/- button: at once, with no double-click wait and no drag
+    $ui.SessionsToggle.Add_MouseLeftButtonDown({ param($src, $e) $e.Handled = $true; $script:clickTimer.Stop(); try { Switch-Sessions } catch { Write-Log $_ } })
+
+    # A sessions list row: that session's remembered window (VS Code or terminal), else its project's VS Code
+    # window; a Claude desktop app session also gets picked in the app's sidebar (FRAGILE, claude-app.ps1)
+    function Open-SessionRow($r) {
+        if (-not $r -or -not $script:canFocus) { return }
+        $w = $null
+        try { $w = [IO.File]::ReadAllText((Join-Path (Join-Path $Data 'sessions') ('{0}.json' -f $r.id)), $Utf8) | ConvertFrom-Json } catch {}
+        $focused = $w -and $w.hwnd -and [ClaudeWidget.WinFocus]::FocusHandle([int64]$w.hwnd)
+        if ($focused -and [string]$w.process -eq 'claude.exe') { Start-ClaudeAppSelect ([int64]$w.hwnd) ([string]$r.title) ([string]$r.cwd) }
+        if (-not $focused -and (-not $w -or [string]$w.kind -in @('', 'vscode'))) {
+            $h = Find-VsCodeWindow $(if ($r.cwd) { Split-Path -Leaf ([string]$r.cwd) } else { '' })
+            if ($h -ne [IntPtr]::Zero) { $focused = [ClaudeWidget.WinFocus]::FocusHandle($h.ToInt64()) }
+        }
+        if ($focused) {
+            $script:sessionsOpen = $false
+            Update-Sessions
+        }
+    }
+
+    # FRAGILE (claude-app.ps1): reading the Claude app's accessibility tree can take a few seconds, so the pick
+    # runs in a runspace of its own, one at a time; anything but 'opened' only goes to widget.log
+    $ClaudeAppScript = Join-Path $PSScriptRoot 'claude-app.ps1'
+    $script:claudeAppCall = $null
+    function Start-ClaudeAppSelect([int64]$Hwnd, [string]$Title, [string]$Cwd) {
+        if ($script:claudeAppCall -or -not $Title) { return }
+        $project = if ($Cwd) { Split-Path -Leaf $Cwd } else { '' }
+        $ps = [powershell]::Create()
+        [void]$ps.AddScript({
+                param($file, $hwnd, $title, $project)
+                . $file
+                Select-ClaudeAppSession ([IntPtr]$hwnd) $title $project
+            }).AddArgument($ClaudeAppScript).AddArgument($Hwnd).AddArgument($Title).AddArgument($project)
+        $script:claudeAppCall = @{ ps = $ps; handle = $ps.BeginInvoke(); started = Get-NowMs }
+    }
+    # From the timer: dispose of a finished pick (or give up on one stuck for 30 s)
+    function Receive-ClaudeAppSelect {
+        $c = $script:claudeAppCall
+        if (-not $c) { return }
+        if (-not $c.handle.IsCompleted) {
+            if (((Get-NowMs) - $c.started) -lt 30000) { return }
+            [void]$c.ps.BeginStop($null, $null)
+            $script:claudeAppCall = $null
+            Write-Log 'claude app: picking the session timed out'
+            return
+        }
+        $result = ''
+        try { $result = [string](@($c.ps.EndInvoke($c.handle)) | Select-Object -Last 1) } catch { $result = 'noaccess' }
+        $c.ps.Dispose()
+        $script:claudeAppCall = $null
+        if ($result -ne 'opened') { Write-Log ('claude app: session not picked ({0})' -f $result) }
     }
     function Show-Idle {
         $wasIdle = $ui.IdlePanel.Visibility -eq 'Visible'
@@ -1042,6 +1109,8 @@ try {
         if ($GoToSession -and $script:canFocus) {
             # The exact window remembered for that session (VS Code or terminal)...
             $focused = $d.hwnd -and [ClaudeWidget.WinFocus]::FocusHandle([int64]$d.hwnd)
+            # The Claude desktop app holds every session: try to pick this one in its sidebar (FRAGILE, claude-app.ps1)
+            if ($focused -and $d.desktopApp -eq $true) { Start-ClaudeAppSelect ([int64]$d.hwnd) ([string]$d.title) ([string]$d.cwd) }
             # ...otherwise, for VS Code sessions, the project's VS Code window, or any VS Code window
             if (-not $focused -and [string]$d.kind -in @('', 'vscode')) {
                 $project = if ($d.cwd) { Split-Path -Leaf ([string]$d.cwd) } else { '' }
@@ -1097,6 +1166,7 @@ try {
         $v = if ($min) { 'Collapsed' } else { 'Visible' }
         $ui.IdleTitle.Visibility = $v
         $ui.IdleText.Visibility = $v
+        if ($min) { $ui.SessionsToggle.Visibility = 'Collapsed' } elseif (@($script:sessionRows).Count -gt 0) { $ui.SessionsToggle.Visibility = 'Visible' }
         $status = if ($ui.IdleText.Text.Length -gt $Sep.Length) { $ui.IdleText.Text.Substring($Sep.Length) } else { '' }
         $tip = if ($min -and $status) { $status + [Environment]::NewLine + $S.idleTip } else { $S.idleTip }
         # Only when it changed: replacing a tooltip that is open would close it
@@ -1194,7 +1264,7 @@ try {
     $closeItem.Header = $S.closeWidget
     $closeItem.Add_Click({ Close-Widget })
     [void]$menu.Items.Add($closeItem)
-    $menu.Add_Opened({ try { Open-MenuFocus } catch { Write-Log $_ } })
+    $menu.Add_Opened({ param($src, $e) try { Open-MenuFocus $src } catch { Write-Log $_ } })
     # Later, at Background priority: a menu item's Click comes after Closed, and one that starts typing keeps the focus
     $menu.Add_Closed({
         [void]$win.Dispatcher.BeginInvoke([System.Windows.Threading.DispatcherPriority]::Background, [Action]{ try { Close-MenuFocus } catch { Write-Log $_ } })
@@ -1855,6 +1925,7 @@ try {
         # (before the alerts: a call you are waiting for gets the free slot first)
         try { Update-TelegramUi } catch { Write-Log $_ }
         if ($script:ticks % 5 -eq 0) { try { Update-Alerts } catch { Write-Log $_ } }
+        try { Receive-ClaudeAppSelect } catch { Write-Log $_ }
         try { Update-View } catch { Write-Log $_ }
         # Every ~2 s: a monitor unplugged or back, a resolution change, the taskbar moved
         $script:ticks++

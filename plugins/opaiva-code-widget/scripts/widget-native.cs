@@ -15,6 +15,7 @@ namespace ClaudeWidget {
         [DllImport("user32.dll")] static extern bool DestroyIcon(IntPtr h);
         [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr h, int index);
         [DllImport("user32.dll")] static extern int SetWindowLong(IntPtr h, int index, int value);
+        [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
         const int GWL_EXSTYLE = -20;
         const int WS_EX_NOACTIVATE = 0x08000000;
         // On: clicks still reach the buttons, but the window never steals focus
@@ -23,6 +24,8 @@ namespace ClaudeWidget {
             SetWindowLong(h, GWL_EXSTYLE, on ? (ex | WS_EX_NOACTIVATE) : (ex & ~WS_EX_NOACTIVATE));
         }
         public static void DestroyIconHandle(IntPtr h) { DestroyIcon(h); }
+        // To the top of the always-on-top windows, without moving, resizing or activating it
+        public static void RaiseTopmost(IntPtr h) { SetWindowPos(h, new IntPtr(-1), 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010); }
         public static IntPtr Foreground() { return GetForegroundWindow(); }
         public static bool Activate(IntPtr h) { return SetForegroundWindow(h); }
         // A session's remembered window (VS Code or terminal), if it still exists
