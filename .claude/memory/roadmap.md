@@ -23,7 +23,10 @@ Spec: `docs/superpowers/specs/2026-10-25-telegram-alerts-design.md`.
 - Fuera: responder desde Telegram, WhatsApp, mutes por carpeta, tool MCP.
 - Después: deprecar `~/tools/mcp-notify` (hooks en settings.json, MCP en ~/.claude.json, commands notify-*.md), con lista confirmada por Daniel.
 
-## 2.8.0 Cards (UI)
+## 2.8.0 (hecho, 2026-10-27)
+Menú ya no queda tapado por el widget; filas de "N trabajando" clickeables → ventana de la sesión; sesiones de la app de escritorio elegidas en su barra lateral vía UI Automation (FRÁGIL, `claude-app.ps1`); botón +/− para la lista.
+
+## 2.9.0 Cards (UI)
 Título = proyecto · sesión; sacar "Claude Code" del lugar principal; quitar cwd duplicado; paths relativos; **Approve ▾** con los Always allow adentro; "otra respuesta" como link; auto-submit en pregunta única de opción única; barra de tiempo unificada (sin "Telegram en…": Daniel lo descartó); flash "✓ aprobado/✕ denegado".
 - Colores (medido WCAG): blanco sobre Approve `#D97757` = 3.1 (falla), grises `#6E6E78` 3.3 y `#7E7E88` 4.1 (fallan), claro `#7C7C86` 4.0. Subir todos a ≥ 4.5 con test sobre el mapa de colores.
 - Approve/Deny no solo por color: íconos ✓/✕, Deny neutro (rojo en hover). Punto de estado → ícono (escudo / ? / ✓), clave para la pill mínima.
@@ -31,7 +34,7 @@ Título = proyecto · sesión; sacar "Claude Code" del lugar principal; quitar c
 - Menú contextual con el tema del widget (hoy es el claro default de WPF).
 - Mica/Acrylic: último o afuera (frágil en WPF/PS).
 
-## 2.9.0 Seguridad y sesiones (UX)
-Comandos peligrosos (badge rojo, mantener 1 s para aprobar, hotkey no aprueba); filas de sesiones clickeables → ventana de la sesión; pill idle se desvanece a ~40%; botón `⋯` al hover para el menú.
+## 2.10.0 Seguridad (UX)
+Comandos peligrosos (badge rojo, mantener 1 s para aprobar, hotkey no aprueba); pill idle se desvanece a ~40%; botón `⋯` al hover para el menú.
 
 **How to apply:** un spec por versión, en orden. Ver [[estado]] para dónde quedó.
