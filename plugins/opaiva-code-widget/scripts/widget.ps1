@@ -849,14 +849,10 @@ try {
         $w = $null
         try { $w = [IO.File]::ReadAllText((Join-Path (Join-Path $Data 'sessions') ('{0}.json' -f $r.id)), $Utf8) | ConvertFrom-Json } catch {}
         $focused = $w -and $w.hwnd -and [ClaudeWidget.WinFocus]::FocusHandle([int64]$w.hwnd)
-        if ($focused -and [string]$w.process -eq 'claude.exe') { Start-ClaudeAppSelect ([int64]$w.hwnd) ([string]$r.title) ([string]$r.cwd) }
+        if ($focused -and [string]$w.process -eq 'claude.exe') { Start-ClaudeAppSelect ([int64]$w.hwnd) ([string]$r.title) ([string]$r.id) }
         if (-not $focused -and (-not $w -or [string]$w.kind -in @('', 'vscode'))) {
             $h = Find-VsCodeWindow $(if ($r.cwd) { Split-Path -Leaf ([string]$r.cwd) } else { '' })
             if ($h -ne [IntPtr]::Zero) { $focused = [ClaudeWidget.WinFocus]::FocusHandle($h.ToInt64()) }
-        }
-        if ($focused) {
-            $script:sessionsOpen = $false
-            Update-Sessions
         }
     }
 
@@ -864,15 +860,16 @@ try {
     # runs in a runspace of its own, one at a time; anything but 'opened' only goes to widget.log
     $ClaudeAppScript = Join-Path $PSScriptRoot 'claude-app.ps1'
     $script:claudeAppCall = $null
-    function Start-ClaudeAppSelect([int64]$Hwnd, [string]$Title, [string]$Cwd) {
+    function Start-ClaudeAppSelect([int64]$Hwnd, [string]$Title, [string]$SessionId) {
         if ($script:claudeAppCall -or -not $Title) { return }
-        $project = if ($Cwd) { Split-Path -Leaf $Cwd } else { '' }
         $ps = [powershell]::Create()
         [void]$ps.AddScript({
-                param($file, $hwnd, $title, $project)
+                param($file, $hwnd, $title, $sid)
                 . $file
-                Select-ClaudeAppSession ([IntPtr]$hwnd) $title $project
-            }).AddArgument($ClaudeAppScript).AddArgument($Hwnd).AddArgument($Title).AddArgument($project)
+                # (whether it is a fork tells two rows with the same title apart)
+                $fork = Test-ClaudeSessionFork (Find-ClaudeSessionTranscript $sid) $sid
+                Select-ClaudeAppSession ([IntPtr]$hwnd) $title $fork
+            }).AddArgument($ClaudeAppScript).AddArgument($Hwnd).AddArgument($Title).AddArgument($SessionId)
         $script:claudeAppCall = @{ ps = $ps; handle = $ps.BeginInvoke(); started = Get-NowMs }
     }
     # From the timer: dispose of a finished pick (or give up on one stuck for 30 s)
@@ -887,7 +884,7 @@ try {
             return
         }
         $result = ''
-        try { $result = [string](@($c.ps.EndInvoke($c.handle)) | Select-Object -Last 1) } catch { $result = 'noaccess' }
+        try { $result = [string](@($c.ps.EndInvoke($c.handle)) | Select-Object -Last 1) } catch { $result = 'error: ' + $_.Exception.Message }
         $c.ps.Dispose()
         $script:claudeAppCall = $null
         if ($result -ne 'opened') { Write-Log ('claude app: session not picked ({0})' -f $result) }
@@ -1110,7 +1107,7 @@ try {
             # The exact window remembered for that session (VS Code or terminal)...
             $focused = $d.hwnd -and [ClaudeWidget.WinFocus]::FocusHandle([int64]$d.hwnd)
             # The Claude desktop app holds every session: try to pick this one in its sidebar (FRAGILE, claude-app.ps1)
-            if ($focused -and $d.desktopApp -eq $true) { Start-ClaudeAppSelect ([int64]$d.hwnd) ([string]$d.title) ([string]$d.cwd) }
+            if ($focused -and $d.desktopApp -eq $true) { Start-ClaudeAppSelect ([int64]$d.hwnd) ([string]$d.title) ([string]$d.session) }
             # ...otherwise, for VS Code sessions, the project's VS Code window, or any VS Code window
             if (-not $focused -and [string]$d.kind -in @('', 'vscode')) {
                 $project = if ($d.cwd) { Split-Path -Leaf ([string]$d.cwd) } else { '' }
