@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.8.1 (2026-10-27)
+
+- **Picking a Claude desktop app session works for more sessions.** The widget now compares the session's title with each sidebar row's exact title (from the row's "More options" button), so rows the app decorates ("Started by Claude from ...", "Waiting for input ...") are found too. When two rows share the title (a fork keeps its parent's title), the widget tells them apart by whether the session is a fork: a fork's transcript starts with the history it copied, carrying the original session's id. It also retries for a few seconds when the app's sidebar is not there yet, and `widget.log` says why when it cannot pick the session.
+- **The sessions list stays open after a double click on a row;** close it with **−**.
+
 ## 2.8.0 (2026-10-27)
 
 - **Go to a session from the sessions list.** Double-click a row of the "N working" list to bring that session's window to the front (VS Code or terminal).
