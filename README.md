@@ -86,8 +86,8 @@ The widget starts in the default corner again, because the new name comes with a
 | --- | --- |
 | Orange pulsing dot, **permission request** | **Approve** runs the action. **Deny** blocks it and tells Claude you denied it. **Decide in VS Code** shows the normal prompt in VS Code. For an **Edit** or **Write** the card shows the diff. **Always allow...** approves and saves the rule shown on the button (this session, this project or all projects); it only offers rules Claude Code itself suggested. |
 | Blue pulsing dot, **question** | Pick an option (or several, when the question allows it), then **Answer**. **Other answer** lets you type; Enter also sends it. **Answer in VS Code** hands the question back to VS Code. |
-| Green check, **finished** | **Go to VS Code**, **Go to terminal** or **Go to window** brings that session's window to the front. For a Claude desktop app session the button says **Open Claude**: the app keeps every session in one window and has no link to open a given one, so the widget brings the app forward and the button's tooltip names the session to pick in its sidebar. **OK** or **✕** dismisses the notice; the ring next to the ✕ empties until it closes by itself (5 minutes by default, see [Close automatically](#look-and-sound); with **Never** there is no ring). One box per notice, newest on top (up to 4; the last one counts the rest). When the turn ended with a question in the Claude desktop app's "next step" box, the box says **question for you** and shows it (answer it in the app). |
-| Idle pill, **N working** | Click it to list the working sessions (project, title, time). Click again to close the list. |
+| Green check, **finished** | **Go to VS Code**, **Go to terminal** or **Go to window** brings that session's window to the front. For a Claude desktop app session the button says **Open Claude**: the app keeps every session in one window and has no link to open a given one, so the widget brings the app forward and then tries to pick the session in the app's sidebar (experimental, see below); when it cannot tell which row it is, the button's tooltip names the session to pick. **OK** or **✕** dismisses the notice; the ring next to the ✕ empties until it closes by itself (5 minutes by default, see [Close automatically](#look-and-sound); with **Never** there is no ring). One box per notice, newest on top (up to 4; the last one counts the rest). When the turn ended with a question in the Claude desktop app's "next step" box, the box says **question for you** and shows it (answer it in the app). |
+| Idle pill, **N working** | Click **+** next to it (or the pill) to list the working sessions (project, title, time); **−** closes the list. Double-click a row to go to that session: its VS Code or terminal window, or the Claude desktop app with the session picked (experimental). |
 
 - **Drag** the widget anywhere, on any monitor. It remembers the position by its top edge: cards and notices grow downwards from there (upwards only when they would not fit), and the widget always stays inside one monitor.
 - **Double-click** the widget (outside its buttons) to bring back the session's window: on a "finished" notice, that session; otherwise, the session you typed in last.
@@ -160,6 +160,10 @@ The hotkey variables are read when the widget starts, so restart it after changi
   }
 }
 ```
+
+## Claude desktop app sessions (experimental)
+
+The Claude desktop app keeps every Claude Code session in one window, and its `claude://` links can only open a new session. To get you to the right one, the widget reads the app's sidebar through Windows UI Automation (what a screen reader uses) and presses the row whose name is the session's title (and project). If the title fits more than one row (a forked session keeps its title) or none, it does nothing more than bring the app forward. This depends on how the app labels its sidebar today, so an app update can stop it from working; then you just pick the session yourself.
 
 ## Look and sound
 

@@ -86,8 +86,8 @@ O widget volta a abrir no canto padrão, porque o nome novo vem com uma pasta de
 | --- | --- |
 | Ponto laranja piscando, **pedido de permissão** | **Aprovar** executa a ação. **Negar** bloqueia e avisa o Claude que você negou. **Decidir no VS Code** mostra o pedido normal no VS Code. Num **Edit** ou **Write**, o cartão mostra o diff. **Sempre permitir...** aprova e grava a regra do botão (nesta sessão, neste projeto ou em todos os projetos); só oferece regras que o próprio Claude Code sugeriu. |
 | Ponto azul piscando, **pergunta** | Marque uma opção (ou várias, quando a pergunta permite) e clique em **Responder**. **Outra resposta** deixa você digitar; o Enter também envia. **Responder no VS Code** devolve a pergunta para o VS Code. |
-| ✓ verde, **terminou** | **Ir para o VS Code**, **Ir para o terminal** ou **Ir para a janela** traz para a frente a janela daquela sessão. Numa sessão do app desktop do Claude o botão diz **Abrir o Claude**: o app guarda todas as sessões numa só janela e não tem link para abrir uma delas, então o widget traz o app para a frente e a dica do botão diz qual sessão escolher na barra lateral. **Ok** ou **✕** fecha o aviso; o anel ao lado do ✕ esvazia até ele fechar sozinho (5 minutos por padrão, veja [Fechar automaticamente](#aparência-e-som); com **Nunca** não há anel). Um cartão por aviso, o mais novo em cima (até 4; o último conta os demais). Quando a vez terminou com uma pergunta na caixa de "próximo passo" do app desktop do Claude, o cartão diz **pergunta para você** e mostra a pergunta (responda no app). |
-| Pílula parada, **N trabalhando** | Clique para listar as sessões que estão trabalhando (projeto, título, tempo). Clique de novo para fechar a lista. |
+| ✓ verde, **terminou** | **Ir para o VS Code**, **Ir para o terminal** ou **Ir para a janela** traz para a frente a janela daquela sessão. Numa sessão do app desktop do Claude o botão diz **Abrir o Claude**: o app guarda todas as sessões numa só janela e não tem link para abrir uma delas, então o widget traz o app para a frente e tenta escolher a sessão na barra lateral do app (experimental, veja abaixo); quando não consegue saber qual é a linha, a dica do botão diz qual sessão escolher. **Ok** ou **✕** fecha o aviso; o anel ao lado do ✕ esvazia até ele fechar sozinho (5 minutos por padrão, veja [Fechar automaticamente](#aparência-e-som); com **Nunca** não há anel). Um cartão por aviso, o mais novo em cima (até 4; o último conta os demais). Quando a vez terminou com uma pergunta na caixa de "próximo passo" do app desktop do Claude, o cartão diz **pergunta para você** e mostra a pergunta (responda no app). |
+| Pílula parada, **N trabalhando** | Clique no **+** ao lado (ou na pílula) para listar as sessões que estão trabalhando (projeto, título, tempo); **−** fecha a lista. Clique duas vezes numa linha para ir àquela sessão: a janela do VS Code ou do terminal, ou o app desktop do Claude com a sessão escolhida (experimental). |
 
 - **Arraste** o widget para onde quiser, em qualquer monitor. Ele lembra a posição pela borda de cima: cartões e avisos crescem para baixo a partir dali (para cima só quando não cabem), e o widget fica sempre dentro de um monitor.
 - **Duplo clique** no widget (fora dos botões) traz a janela da sessão: no aviso de "terminou", a daquela sessão; nos outros casos, a da última sessão em que você digitou.
@@ -160,6 +160,10 @@ As variáveis de atalho são lidas quando o widget inicia; reinicie-o depois de 
   }
 }
 ```
+
+## Sessões do app desktop do Claude (experimental)
+
+O app desktop do Claude guarda todas as sessões do Claude Code numa só janela, e os links `claude://` só abrem uma sessão nova. Para levar você à certa, o widget lê a barra lateral do app pela UI Automation do Windows (o que um leitor de tela usa) e aperta a linha cujo nome é o título da sessão (e o projeto). Se o título serve para mais de uma linha (uma sessão bifurcada mantém o título) ou para nenhuma, ele só traz o app para a frente. Isso depende de como o app rotula a barra lateral hoje, então uma atualização do app pode fazer parar de funcionar; aí é só escolher a sessão você mesmo.
 
 ## Aparência e som
 

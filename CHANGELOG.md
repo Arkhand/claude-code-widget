@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.8.0 (2026-10-27)
+
+- **Go to a session from the sessions list.** Double-click a row of the "N working" list to bring that session's window to the front (VS Code or terminal).
+- **Claude desktop app sessions get picked (experimental).** "Open Claude" and a double click on a list row now also press the session's row in the app's sidebar, read through Windows UI Automation. When the title fits more than one row (forks keep their title) or none, the app just comes forward, as in 2.7.1. It depends on how the app labels its sidebar, so an app update can stop it; the code is isolated in `claude-app.ps1` to remove it easily.
+- **A + button opens the sessions list at once.** A click on the pill waits out the double-click time (a double click goes to the last session), which felt unreliable; **+** / **−** toggles the list immediately.
+- **The right-click menu no longer opens behind the widget.** Since 2.7.0 the widget takes the focus while its menu is open (so the menu closes when you click elsewhere), and that lifted it above its own menu, covering the first items. The menu now goes back on top right after.
+
 ## 2.7.1 (2026-10-26)
 
 - **"Open Claude" for Claude desktop app sessions.** The finished notice's button used to say "Go to window" and then showed whatever session the app had open: the app keeps every session in one window and has no link to open a given one. It now says **Open Claude**, and its tooltip names the session to pick in the app's sidebar.

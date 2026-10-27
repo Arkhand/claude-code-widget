@@ -67,6 +67,10 @@
           <Ellipse x:Name="IdleDot" Width="8" Height="8" Fill="#5FB98A" VerticalAlignment="Center" Margin="0,0,9,0"/>
           <TextBlock x:Name="IdleTitle" Text="Claude Code" Foreground="#E8E8EC" FontSize="12.5" FontWeight="SemiBold" VerticalAlignment="Center"/>
           <TextBlock x:Name="IdleText" Foreground="#7E7E88" FontSize="12" VerticalAlignment="Center"/>
+          <!-- Opens or closes the sessions list at once (a click on the pill waits out the double-click time) -->
+          <Border x:Name="SessionsToggle" Margin="8,0,0,0" Padding="6,0,6,1" CornerRadius="4" Background="#2A2A30" BorderBrush="#3A3A42" BorderThickness="1" VerticalAlignment="Center" Cursor="Hand" Visibility="Collapsed">
+            <TextBlock x:Name="SessionsToggleText" Text="+" Foreground="#C8C8D0" FontSize="12" FontWeight="SemiBold"/>
+          </Border>
         </StackPanel>
         <StackPanel x:Name="SessionsList" Margin="0,8,0,0" Visibility="Collapsed"/>
       </StackPanel>
