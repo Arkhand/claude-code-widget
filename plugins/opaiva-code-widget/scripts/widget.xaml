@@ -79,8 +79,8 @@
         <DockPanel Margin="0,0,0,12">
           <TextBlock x:Name="Countdown" DockPanel.Dock="Right" Foreground="#7E7E88" FontSize="12" VerticalAlignment="Center"/>
           <Ellipse x:Name="ReqDot" Width="10" Height="10" Fill="#D97757" VerticalAlignment="Center" Margin="0,0,10,0"/>
-          <TextBlock Text="Claude Code" Foreground="#F4F4F6" FontSize="14.5" FontWeight="SemiBold" VerticalAlignment="Center"/>
-          <TextBlock x:Name="ReqTitle" Foreground="#8A8A93" FontSize="12.5" VerticalAlignment="Center"/>
+          <TextBlock x:Name="ReqHeader" Text="Claude Code" Foreground="#F4F4F6" FontSize="14.5" FontWeight="SemiBold" VerticalAlignment="Center" MaxWidth="230" TextTrimming="CharacterEllipsis"/>
+          <TextBlock x:Name="ReqTitle" Foreground="#8A8A93" FontSize="12.5" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
         </DockPanel>
 
         <WrapPanel Margin="0,0,0,10">
@@ -127,8 +127,8 @@
         <DockPanel Margin="0,0,0,12">
           <TextBlock x:Name="QCountdown" DockPanel.Dock="Right" Foreground="#7E7E88" FontSize="12" VerticalAlignment="Center"/>
           <Ellipse x:Name="QDot" Width="10" Height="10" Fill="#7AA2F7" VerticalAlignment="Center" Margin="0,0,10,0"/>
-          <TextBlock Text="Claude Code" Foreground="#F4F4F6" FontSize="14.5" FontWeight="SemiBold" VerticalAlignment="Center"/>
-          <TextBlock x:Name="QTitle" Foreground="#8A8A93" FontSize="12.5" VerticalAlignment="Center"/>
+          <TextBlock x:Name="QHeader" Text="Claude Code" Foreground="#F4F4F6" FontSize="14.5" FontWeight="SemiBold" VerticalAlignment="Center" MaxWidth="230" TextTrimming="CharacterEllipsis"/>
+          <TextBlock x:Name="QTitle" Foreground="#8A8A93" FontSize="12.5" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
         </DockPanel>
 
         <WrapPanel Margin="0,0,0,10">
@@ -237,13 +237,13 @@
               <Ellipse.RenderTransform><RotateTransform Angle="-90"/></Ellipse.RenderTransform>
             </Ellipse>
           </Grid>
-          <TextBlock x:Name="DoneAgo" DockPanel.Dock="Right" Foreground="#7E7E88" FontSize="12" VerticalAlignment="Center"/>
+          <TextBlock x:Name="DoneAgo" DockPanel.Dock="Right" Foreground="#7E7E88" FontSize="12" VerticalAlignment="Center" Margin="8,0,0,0"/>
           <Border Width="18" Height="18" CornerRadius="9" Background="#2F6F4E" VerticalAlignment="Center" Margin="0,0,9,0">
             <TextBlock Text="&#10003;" Foreground="#FFFFFF" FontSize="11" FontWeight="Bold"
                        HorizontalAlignment="Center" VerticalAlignment="Center"/>
           </Border>
-          <TextBlock Text="Claude Code" Foreground="#F4F4F6" FontSize="14.5" FontWeight="SemiBold" VerticalAlignment="Center"/>
-          <TextBlock x:Name="DoneTitle" Foreground="#8A8A93" FontSize="12.5" VerticalAlignment="Center"/>
+          <TextBlock x:Name="DoneHeader" Text="Claude Code" Foreground="#F4F4F6" FontSize="14.5" FontWeight="SemiBold" VerticalAlignment="Center" MaxWidth="150" TextTrimming="CharacterEllipsis"/>
+          <TextBlock x:Name="DoneTitle" Foreground="#8A8A93" FontSize="12.5" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
         </DockPanel>
 
         <WrapPanel Margin="0,0,0,8">
@@ -261,6 +261,8 @@
         <DockPanel Margin="0,14,0,0" LastChildFill="False">
           <Button x:Name="BtnGoVs" Style="{StaticResource Btn}" Height="32"
                   Background="#2F6F4E" BorderBrush="#2F6F4E" DockPanel.Dock="Left"/>
+          <!-- In place of BtnGoVs when the question has answer buttons in the Claude app: one per answer -->
+          <WrapPanel x:Name="DoneChoices" DockPanel.Dock="Left" MaxWidth="290" Visibility="Collapsed"/>
           <Button x:Name="BtnDismiss" Style="{StaticResource Btn}" Height="32"
                   Background="#2A2A30" BorderBrush="#3A3A42" Foreground="#C8C8D0" DockPanel.Dock="Right"/>
         </DockPanel>

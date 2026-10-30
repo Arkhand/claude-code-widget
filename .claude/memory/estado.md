@@ -1,12 +1,13 @@
 ---
 name: estado
-description: Estado al 2026-10-27 y pendientes concretos para retomar
+description: Estado al 2026-10-30 y pendientes concretos para retomar
 metadata:
   type: project
 ---
 
-Estado al **2026-10-27**:
+Estado al **2026-10-30**:
 
+- **2.9.0 en `main`, pusheada e instalada (2026-10-30).** El nombre de la sesión encabeza cards y notices (el chip queda solo con el proyecto). Si la app de Claude termina con una pregunta con botones (`mcp__ccd_turn__wrap_up`, campo `actions[].label`), la notice muestra esos botones (máx. 3) en lugar de "Abrir Claude"; el click solo lleva a la sesión. Daniel eligió NO responder desde el widget (apretar el botón de la app por UI Automation quedó descartado por ahora).
 - **2.8.1 en `main`, pusheada, instalada y corriendo (2026-10-27).** 2.8.1: elegir la sesión en la app de Claude compara el título exacto de cada fila (botón "Más opciones para <título>") y distingue original de copia bifurcada (el registro de una copia arranca con el id de la original); reintenta ~6 s; el log dice el motivo; la lista queda abierta tras el doble click.
 - 2.8.0: Antes, 2.7.1 = botón "Abrir Claude" para sesiones de la app de escritorio (no hay link para abrir una sesión existente de Code; todas comparten una ventana).
 - Verificado antes de 2.7.0: `tools\test.ps1 -ExcludeTag Desktop` 525/0; `tests\widget.Tests.ps1` (sesión desbloqueada) 42/0; `claude plugin validate` OK. 2.7.1: 528/0.
@@ -21,4 +22,5 @@ Estado al **2026-10-27**:
 
 1. Correr la suite Desktop completa con la PC quieta (no se corrió entera para 2.8.0; sí los tests de menú, sesiones, render y cola).
 2. Daniel ya conectó el bot (2026-10-27, `telegram.json` existe). Falta probar un aviso real. Ver si la edición a "resuelto" y los errores reales (409, 403) se comportan como en los tests.
-3. Pendiente aparte: `README.es.md` + `docs/images/es/`. Después, 2.9.0 Cards y 2.10.0 Seguridad ([[roadmap]]).
+3. Pendiente aparte: `README.es.md` + `docs/images/es/`. Después, 2.10.0 Cards y 2.11.0 Seguridad ([[roadmap]]; se corrieron un número porque 2.9.0 fue lo de las opciones).
+4. Diagnóstico abierto: una notice de pregunta de CCRT desapareció sin que ningún hook la borrara (2026-10-28). Se propuso loguear en widget.log por qué se cierra cada notice; Daniel no respondió.

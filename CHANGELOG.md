@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.9.0 (2026-10-30)
+
+- **The session's name heads every card and notice,** in place of "Claude Code" (which stays when the session has no title yet). The chip below now shows only the project. Long names are cut, with the full name in the tooltip.
+- **Answer buttons of a Claude desktop app question show on the notice.** When a turn ends with a question that has answer buttons in the app's "next step" box (for example **Yes, create it** / **No, other account**), the notice shows them (up to 3) in place of **Open Claude**, the app's suggested answer in green. A click takes you to the session, as **Open Claude** does; you press the answer in the app.
+
 ## 2.8.1 (2026-10-27)
 
 - **Picking a Claude desktop app session works for more sessions.** The widget now compares the session's title with each sidebar row's exact title (from the row's "More options" button), so rows the app decorates ("Started by Claude from ...", "Waiting for input ...") are found too. When two rows share the title (a fork keeps its parent's title), the widget tells them apart by whether the session is a fork: a fork's transcript starts with the history it copied, carrying the original session's id. It also retries for a few seconds when the app's sidebar is not there yet, and `widget.log` says why when it cannot pick the session.

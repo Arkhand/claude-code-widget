@@ -65,8 +65,9 @@ Describe 'Get-PendingAsk' {
         $prompt = '{"type":"user","message":{"role":"user","content":"do it"}}'
         $result = '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}'
         $text = '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Done."}]}}'
-        function New-WrapUp([string]$Ask) {
+        function New-WrapUp([string]$Ask, [string[]]$Labels = @()) {
             $in = if ($Ask) { @{ recap = 'r'; ask = $Ask } } else { @{ recap = 'r' } }
+            if ($Labels) { $in.actions = @($Labels | ForEach-Object { @{ label = $_; message = "m $_" } }) }
             return (@{ type = 'assistant'; message = @{ role = 'assistant'; content = @(@{ type = 'tool_use'; id = 't1'; name = 'mcp__ccd_turn__wrap_up'; input = $in }) } } | ConvertTo-Json -Depth 8 -Compress)
         }
         function New-Transcript([string[]]$Lines) {
@@ -76,16 +77,25 @@ Describe 'Get-PendingAsk' {
         }
     }
     It 'returns the question of this turn''s wrap-up' {
-        Get-PendingAsk (New-Transcript @($prompt, (New-WrapUp 'Push it?'), $result, $text)) | Should -BeExactly 'Push it?'
+        (Get-PendingAsk (New-Transcript @($prompt, (New-WrapUp 'Push it?'), $result, $text))).Ask | Should -BeExactly 'Push it?'
+    }
+    It 'returns the labels of its answer buttons, at most 3, skipping empty ones' {
+        $p = Get-PendingAsk (New-Transcript @($prompt, (New-WrapUp 'Push it?' @('Yes, push', ' ', 'No', 'Later', 'Never')), $result, $text))
+        $p.Choices | Should -Be @('Yes, push', 'No', 'Later')
+    }
+    It 'returns no choices when the wrap-up has no buttons' {
+        @((Get-PendingAsk (New-Transcript @($prompt, (New-WrapUp 'Push it?'), $result, $text))).Choices).Count | Should -Be 0
     }
     It 'returns an empty string when the wrap-up has no question' {
-        Get-PendingAsk (New-Transcript @($prompt, (New-WrapUp ''), $result, $text)) | Should -BeExactly ''
+        (Get-PendingAsk (New-Transcript @($prompt, (New-WrapUp ''), $result, $text))).Ask | Should -BeExactly ''
     }
     It 'ignores a question from an earlier turn' {
-        Get-PendingAsk (New-Transcript @((New-WrapUp 'Old?'), $result, $prompt, $text)) | Should -BeExactly ''
+        $p = Get-PendingAsk (New-Transcript @((New-WrapUp 'Old?' @('Yes')), $result, $prompt, $text))
+        $p.Ask | Should -BeExactly ''
+        @($p.Choices).Count | Should -Be 0
     }
     It 'returns an empty string for a missing transcript' {
-        Get-PendingAsk (Join-Path $tmpData 'missing.jsonl') | Should -BeExactly ''
+        (Get-PendingAsk (Join-Path $tmpData 'missing.jsonl')).Ask | Should -BeExactly ''
     }
 }
 
