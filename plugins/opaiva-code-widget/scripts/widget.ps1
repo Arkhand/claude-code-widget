@@ -156,7 +156,7 @@ try {
 
     $win = [Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader $xaml))
     $ui = @{}
-    foreach ($n in 'Card', 'IdlePanel', 'IdleDot', 'IdleTitle', 'IdleText', 'SessionsToggle', 'SessionsToggleText', 'SessionsList', 'ChangeBox', 'ChangeLines', 'AlwaysList', 'ReqPanel', 'ReqTitle', 'QPanel', 'QTitle', 'DonePanel',
+    foreach ($n in 'Card', 'IdlePanel', 'IdleDot', 'IdleTitle', 'IdleText', 'SessionsToggle', 'SessionsToggleText', 'SessionsList', 'ChangeBox', 'ChangeLines', 'AlwaysList', 'ReqPanel', 'ReqHeader', 'ReqTitle', 'QPanel', 'QHeader', 'QTitle', 'DonePanel',
         'ReqDot', 'Countdown', 'Tool', 'ProjectChip', 'Project', 'QueueChip', 'QueueText', 'Desc', 'Detail', 'Cwd',
         'BtnApprove', 'BtnDeny', 'BtnVs', 'QCountdown', 'QDot', 'QProjectChip', 'QProject', 'QQueueChip', 'QQueueText',
         'QList', 'BtnAnswer', 'BtnQVs',
@@ -451,8 +451,12 @@ try {
         else { $chip.Visibility = 'Collapsed' }
     }
 
-    function Set-ProjectChip($chip, $textBlock, $item) {
-        $text = Format-SessionLine ([string]$item.cwd) ([string]$item.title)
+    # The session's name goes in the card's header (in place of "Claude Code"), the project in the chip
+    function Set-ProjectChip($chip, $textBlock, $item, $header) {
+        $title = Format-SessionLine '' ([string]$item.title)
+        $header.Text = if ($title) { $title } else { 'Claude Code' }
+        $header.ToolTip = if ($title) { ([string]$item.title).Trim() } else { $null }
+        $text = Format-SessionLine ([string]$item.cwd) ''
         $textBlock.Text = $text
         $chip.Visibility = if ($text) { 'Visible' } else { 'Collapsed' }
     }
@@ -535,7 +539,7 @@ try {
     }
     function Show-Permission($r) {
         $ui.Tool.Text = [string]$r.tool
-        Set-ProjectChip $ui.ProjectChip $ui.Project $r
+        Set-ProjectChip $ui.ProjectChip $ui.Project $r $ui.ReqHeader
         if ($r.cwd) { $ui.Cwd.Text = [string]$r.cwd; $ui.Cwd.Visibility = 'Visible' } else { $ui.Cwd.Visibility = 'Collapsed' }
         $ui.Desc.Text = [string]$r.description
         $ui.Detail.Text = [string]$r.detail
@@ -621,7 +625,7 @@ try {
     }
 
     function Show-Question($r) {
-        Set-ProjectChip $ui.QProjectChip $ui.QProject $r
+        Set-ProjectChip $ui.QProjectChip $ui.QProject $r $ui.QHeader
         $ui.QList.Children.Clear()
         $script:qState = New-Object System.Collections.ArrayList
         $questions = @($r.questions)
@@ -926,15 +930,15 @@ try {
     function New-DoneItem($d) {
         $root = [Windows.Markup.XamlReader]::Parse($DoneItemXaml)
         $it = @{ notice = $d; root = $root; ui = @{} }
-        foreach ($n in 'DoneTitle', 'DoneAgo', 'DoneTimer', 'DoneProjectChip', 'DoneProject', 'DoneMoreChip', 'DoneMoreText',
-            'DoneMsg', 'BtnGoVs', 'BtnDismiss', 'BtnDoneClose') {
+        foreach ($n in 'DoneHeader', 'DoneTitle', 'DoneAgo', 'DoneTimer', 'DoneProjectChip', 'DoneProject', 'DoneMoreChip', 'DoneMoreText',
+            'DoneMsg', 'BtnGoVs', 'DoneChoices', 'BtnDismiss', 'BtnDoneClose') {
             $it.ui[$n] = $root.FindName($n)
         }
         foreach ($n in 'BtnGoVs', 'BtnDismiss', 'BtnDoneClose') { $it.ui[$n].Style = $win.Resources['Btn'] }
         foreach ($n in 'DoneProjectChip', 'DoneMoreChip') { $it.ui[$n].Style = $win.Resources['Chip'] }
         Convert-ElementColors $root @{} $script:colorMap
         $it.ui.DoneTitle.Text = $Sep + $(if ($d.question) { $S.doneQuestionTitle } else { $S.doneTitle })
-        Set-ProjectChip $it.ui.DoneProjectChip $it.ui.DoneProject $d
+        Set-ProjectChip $it.ui.DoneProjectChip $it.ui.DoneProject $d $it.ui.DoneHeader
         $it.ui.DoneMsg.Text = [string]$d.message
         $goTo = Get-GoToButton $d $S
         $it.ui.BtnGoVs.Content = $goTo.Label
@@ -945,6 +949,25 @@ try {
         $it.ui.BtnDismiss.Add_Click({ param($src, $e) Close-DoneNotice ([string]$src.Tag) })
         $it.ui.BtnDoneClose.Add_Click({ param($src, $e) Close-DoneNotice ([string]$src.Tag) })
         $it.ui.BtnGoVs.Add_Click({ param($src, $e) Close-DoneNotice ([string]$src.Tag) -GoToSession })
+        # The question's answer buttons in the Claude app, in place of the "go to" button: each one goes to the
+        # session, where you press that answer (the first one, the app's suggested answer, stands out)
+        $choices = @(@($d.choices) | Where-Object { $_ } | Select-Object -First 3)
+        foreach ($c in $choices) {
+            $b = New-Object System.Windows.Controls.Button
+            $b.Style = $win.Resources['Btn']
+            $b.Height = 32
+            $b.Margin = New-Object System.Windows.Thickness 0, 0, 6, 0
+            $b.Content = [string]$c
+            $b.ToolTip = $goTo.Tip
+            $b.Tag = [string]$d.key
+            $color = if ($it.ui.DoneChoices.Children.Count -eq 0) { $it.ui.BtnGoVs.Background } else { $it.ui.BtnDismiss.Background }
+            $b.Background = $color
+            $b.BorderBrush = $color
+            if ($it.ui.DoneChoices.Children.Count) { $b.Foreground = $it.ui.BtnDismiss.Foreground }
+            $b.Add_Click({ param($src, $e) Close-DoneNotice ([string]$src.Tag) -GoToSession })
+            [void]$it.ui.DoneChoices.Children.Add($b)
+        }
+        if ($choices.Count) { $it.ui.BtnGoVs.Visibility = 'Collapsed'; $it.ui.DoneChoices.Visibility = 'Visible' }
         return $it
     }
 

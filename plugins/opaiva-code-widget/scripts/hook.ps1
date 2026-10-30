@@ -282,10 +282,12 @@ function Get-LastAssistantText($evt) {
     return ''
 }
 
-# The question the Claude desktop app shows in its "next step" box at the end of this turn: the `ask`
-# of the last mcp__ccd_turn__wrap_up call after your last prompt. '' when there is none.
+# The question the Claude desktop app shows in its "next step" box at the end of this turn, from the last
+# mcp__ccd_turn__wrap_up call after your last prompt: Ask (its `ask`, '' when there is none) and Choices
+# (the labels of its answer buttons, at most 3).
 function Get-PendingAsk([string]$TranscriptPath) {
-    if (-not $TranscriptPath -or -not (Test-Path -LiteralPath $TranscriptPath)) { return '' }
+    $none = @{ Ask = ''; Choices = @() }
+    if (-not $TranscriptPath -or -not (Test-Path -LiteralPath $TranscriptPath)) { return $none }
     try {
         # Get-Content -Tail takes ~25 s on a few MB of long JSON lines: read the last 4 MB directly
         # (shared, Claude Code is still writing the file)
@@ -306,14 +308,17 @@ function Get-PendingAsk([string]$TranscriptPath) {
                 try { $o = $line | ConvertFrom-Json } catch { continue }
                 if ($o.type -ne 'assistant') { continue }
                 foreach ($c in @($o.message.content)) {
-                    if ($c.type -eq 'tool_use' -and $c.name -eq 'mcp__ccd_turn__wrap_up') { return [string]$c.input.ask }
+                    if ($c.type -eq 'tool_use' -and $c.name -eq 'mcp__ccd_turn__wrap_up') {
+                        $labels = @(@($c.input.actions) | ForEach-Object { ([string]$_.label).Trim() } | Where-Object { $_ })
+                        return @{ Ask = [string]$c.input.ask; Choices = @($labels | Select-Object -First 3) }
+                    }
                 }
             }
             # Your prompt starts the turn: nothing before it counts
-            elseif ($line -like '*"type":"user"*' -and $line -notlike '*"tool_result"*') { return '' }
+            elseif ($line -like '*"type":"user"*' -and $line -notlike '*"tool_result"*') { return $none }
         }
     } catch {}
-    return ''
+    return $none
 }
 
 # Markdown -> short plain text
@@ -623,7 +628,8 @@ function Invoke-Hook($evt) {
         # The Claude desktop app hosts every session in one window: it being in front says nothing
         $inDesktopApp = $sessionWindow -and [string]$sessionWindow.process -eq 'claude.exe'
         if (-not $inDesktopApp -and (Test-UserWatching $cwd $sessionWindow)) { Write-HookLog "$logTag no notice (session window in front)"; return $null }
-        $ask = Format-Snippet (Get-PendingAsk $transcript)
+        $pending = Get-PendingAsk $transcript
+        $ask = Format-Snippet $pending.Ask
         $msg = if ($ask) { $ask } else { Format-Snippet (Get-LastAssistantText $evt) }
         if (-not $msg) { $msg = $S.readyNext }
         New-Item -ItemType Directory -Force -Path $Queue | Out-Null
@@ -635,6 +641,8 @@ function Invoke-Hook($evt) {
             message = $msg
             # $msg is the question waiting in the Claude desktop app, not the end of the reply
             question = [bool]$ask
+            # The question's answer buttons in the app, shown as buttons on the notice
+            choices = @(if ($ask) { $pending.Choices })
             title   = Get-SessionTitle $transcript $sid
             allDone = [bool]$allDone
             # Lets the widget's button go back to that exact window (VS Code or terminal)

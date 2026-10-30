@@ -192,6 +192,20 @@ Describe 'hook.ps1 end to end' {
             Send-WidgetResponse $box $req.id @{ decision = 'vscode' }
             [void](Complete-Hook $run)
         }
+        It 'Stop stores the question of the Claude app and its answer buttons' {
+            $transcript = Join-Path $box.Data 'transcript-ask.jsonl'
+            $wrap = @{ type = 'assistant'; message = @{ role = 'assistant'; content = @(@{ type = 'tool_use'; id = 't1'; name = 'mcp__ccd_turn__wrap_up'
+                            input = @{ recap = 'r'; ask = 'Push it?'; actions = @(@{ label = 'Yes, push'; message = 'push' }) } }) } } | ConvertTo-Json -Depth 8 -Compress
+            [IO.File]::WriteAllText($transcript, ('{"type":"user","message":{"role":"user","content":"go"}}' + "`n" + $wrap + "`n"))
+            $stop = New-HookEvent 'Stop' $box.Data @{ last_assistant_message = 'ok'; transcript_path = $transcript }
+            [void](Complete-Hook (Start-Hook $box $stop))
+            $notice = [IO.File]::ReadAllText((Get-QueueFiles $box "done-$($stop.session_id)-*.json")[0].FullName, [Text.Encoding]::UTF8) | ConvertFrom-Json
+            $notice.message | Should -BeExactly 'Push it?'
+            $notice.question | Should -BeTrue
+            # (one answer is still a list)
+            , $notice.choices | Should -BeOfType [object[]]
+            $notice.choices | Should -Be @('Yes, push')
+        }
         It 'UserPromptSubmit marks the session as working and Stop clears it' {
             $prompt = New-HookEvent 'UserPromptSubmit' $box.Data @{ prompt = 'go' }
             [void](Complete-Hook (Start-Hook $box $prompt))
